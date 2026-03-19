@@ -78,6 +78,99 @@ func TestCommandContains(t *testing.T) {
 	}
 }
 
+func TestHasPipe(t *testing.T) {
+	tests := []struct {
+		command string
+		hasPipe bool
+	}{
+		{"cat foo | grep bar", true},
+		{"ls -la", false},
+		{"echo 'hello | world'", false},
+	}
+
+	stage, _ := stages.Build(config.StageConfig{Stage: "has-pipe"})
+	for _, tc := range tests {
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		stage.Run(ctx)
+		got, _ := ctx.Bag["has_pipe"].(bool)
+		if got != tc.hasPipe {
+			t.Errorf("command %q: expected has_pipe=%v, got %v", tc.command, tc.hasPipe, got)
+		}
+	}
+}
+
+func TestHasPipeFilterBehavior(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{Stage: "has-pipe", Negate: true})
+
+	ctx := newCtx("cat foo | grep bar")
+	ctx.Bag["command"] = "cat foo | grep bar"
+	result, _ := stage.Run(ctx)
+	if result != pipeline.Skip {
+		t.Error("has-pipe negate=true on piped command should Skip")
+	}
+
+	ctx2 := newCtx("cat foo")
+	ctx2.Bag["command"] = "cat foo"
+	result2, _ := stage.Run(ctx2)
+	if result2 != pipeline.Continue {
+		t.Error("has-pipe negate=true on non-piped command should Continue")
+	}
+}
+
+func TestHasSubshell(t *testing.T) {
+	tests := []struct {
+		command     string
+		hasSubshell bool
+	}{
+		{"echo $(date)", true},
+		{"echo `date`", true},
+		{"echo hello", false},
+		{"echo '$(not a subshell)'", false},
+	}
+
+	stage, _ := stages.Build(config.StageConfig{Stage: "has-subshell"})
+	for _, tc := range tests {
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		stage.Run(ctx)
+		got, _ := ctx.Bag["has_subshell"].(bool)
+		if got != tc.hasSubshell {
+			t.Errorf("command %q: expected has_subshell=%v, got %v", tc.command, tc.hasSubshell, got)
+		}
+	}
+}
+
+func TestHasTemplate(t *testing.T) {
+	tests := []struct {
+		command     string
+		hasTemplate bool
+		templates   int
+	}{
+		{"curl -H '{{vault:ansible@common:key}}' https://api.com", true, 1},
+		{"curl -u '{{vault:ansible@common:user}}:{{vault:ansible@common:pass}}' https://api.com", true, 2},
+		{"echo hello", false, 0},
+		{"echo '{{gcp:project/secret}}'", true, 1},
+	}
+
+	stage, _ := stages.Build(config.StageConfig{Stage: "has-template"})
+	for _, tc := range tests {
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		stage.Run(ctx)
+		got, _ := ctx.Bag["has_template"].(bool)
+		if got != tc.hasTemplate {
+			t.Errorf("command %q: expected has_template=%v, got %v", tc.command, tc.hasTemplate, got)
+		}
+		if tc.hasTemplate {
+			templates, _ := ctx.Bag["templates"].([]string)
+			if len(templates) != tc.templates {
+				t.Errorf("command %q: expected %d templates, got %d", tc.command, tc.templates, len(templates))
+			}
+		}
+	}
+}
+
 func TestNormalizeCommand(t *testing.T) {
 	tests := []struct {
 		input    string
