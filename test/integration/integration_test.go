@@ -149,6 +149,96 @@ func TestIntegrationPreEchoPassthrough(t *testing.T) {
 	}
 }
 
+// --- kubectl rules ---
+
+func TestIntegrationPreKubectlGetUnfiltered(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"kubectl get pods -A"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "deny") {
+		t.Errorf("expected deny for unfiltered kubectl get, got: %s", output)
+	}
+}
+
+func TestIntegrationPreKubectlGetJsonAllowed(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"kubectl get pods -n a11s -o json"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough for kubectl get -o json, got: %s", output)
+	}
+}
+
+func TestIntegrationPreKubectlGetPipedAllowed(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"kubectl get pods -A | head -20"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough for piped kubectl get, got: %s", output)
+	}
+}
+
+func TestIntegrationPreKubectlDescribeUnfiltered(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"kubectl describe node gke-jw-pool-1"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "deny") {
+		t.Errorf("expected deny for unfiltered kubectl describe, got: %s", output)
+	}
+}
+
+func TestIntegrationPreKubectlLogsUnbounded(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"kubectl logs my-pod -n a11s"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "deny") {
+		t.Errorf("expected deny for unbounded kubectl logs, got: %s", output)
+	}
+}
+
+func TestIntegrationPreKubectlLogsTailAllowed(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"kubectl logs my-pod -n a11s --tail=100"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough for kubectl logs --tail, got: %s", output)
+	}
+}
+
+func TestIntegrationPreKubectlLogsSinceAllowed(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"kubectl logs my-pod -n a11s --since=5m"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough for kubectl logs --since, got: %s", output)
+	}
+}
+
+func TestIntegrationPreKubectlApplyPassthrough(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"kubectl apply -f manifest.yaml"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough for kubectl apply, got: %s", output)
+	}
+}
+
 func TestIntegrationPostNoRules(t *testing.T) {
 	input := `{"tool_name":"Bash","tool_input":{"command":"ls -la"},"tool_output":"line1\nline2\n","tool_use_id":"int-test","session_id":"s","cwd":"/tmp"}`
 	output, err := runPostWithRules(input, productionRulesPath())

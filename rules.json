@@ -78,6 +78,27 @@
       ]
     },
     {
+      "id": "kubectl-unfiltered",
+      "tool": "Bash",
+      "description": "Require filtered output for kubectl get/describe",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["kubectl get", "kubectl describe"] },
+        { "stage": "has-pipe", "negate": true },
+        { "stage": "command-contains", "args": ["-o json", "-o yaml", "-o name", "-o wide"], "negate": true },
+        { "stage": "deny", "message": "Use -o json | jq or pipe output to filter kubectl results" }
+      ]
+    },
+    {
+      "id": "kubectl-logs-unbounded",
+      "tool": "Bash",
+      "description": "Require --tail or --since for kubectl logs",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["kubectl logs"] },
+        { "stage": "command-contains", "args": ["--tail", "--since"], "negate": true },
+        { "stage": "deny", "message": "Use --tail or --since to bound kubectl logs" }
+      ]
+    },
+    {
       "id": "unbounded-git-log",
       "tool": "Bash",
       "description": "Catch unbounded git log/diff",
