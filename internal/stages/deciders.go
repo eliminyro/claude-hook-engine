@@ -84,7 +84,11 @@ func (s *redirectStage) Name() string             { return "redirect" }
 func (s *redirectStage) Type() pipeline.StageType { return pipeline.DeciderType }
 func (s *redirectStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	ctx.Result.PermissionDecision = "deny"
-	ctx.Result.SystemMessage = fmt.Sprintf("Suggestion: Use %s tool. %s", s.tool, s.message)
+	if s.tool != "" {
+		ctx.Result.SystemMessage = fmt.Sprintf("Suggestion: Use %s tool. %s", s.tool, s.message)
+	} else {
+		ctx.Result.SystemMessage = s.message
+	}
 	return pipeline.Done, nil
 }
 
@@ -104,7 +108,11 @@ func (s *redirectIfStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResu
 		return pipeline.Skip, nil
 	}
 	ctx.Result.PermissionDecision = "deny"
-	ctx.Result.SystemMessage = fmt.Sprintf("Suggestion: Use %s tool. %s", s.tool, s.message)
+	if s.tool != "" {
+		ctx.Result.SystemMessage = fmt.Sprintf("Suggestion: Use %s tool. %s", s.tool, s.message)
+	} else {
+		ctx.Result.SystemMessage = s.message
+	}
 	return pipeline.Done, nil
 }
 
