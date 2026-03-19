@@ -47,6 +47,7 @@ func (s *allowStage) Name() string             { return "allow" }
 func (s *allowStage) Type() pipeline.StageType { return pipeline.DeciderType }
 func (s *allowStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	ctx.Result.PermissionDecision = "allow"
+	ctx.Result.SystemMessage = "Allowed by hook"
 	return pipeline.Done, nil
 }
 
@@ -119,6 +120,7 @@ func (s *rewriteExecStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	}
 	rawCmd, _ := ctx.ToolInput["command"].(string)
 	ctx.Result.PermissionDecision = "allow"
+	ctx.Result.SystemMessage = "Template rewritten to exec"
 	ctx.Result.UpdatedInput = map[string]any{
 		"command": "claude-hook-engine exec -- " + rawCmd,
 	}
@@ -178,6 +180,7 @@ func (s *allPartsAllowedStage) Run(ctx *pipeline.PipelineContext) (pipeline.Stag
 
 	if allAllowed {
 		ctx.Result.PermissionDecision = "allow"
+		ctx.Result.SystemMessage = "All parts of compound command are allowed"
 		return pipeline.Done, nil
 	}
 	return pipeline.Skip, nil

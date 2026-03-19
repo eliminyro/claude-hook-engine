@@ -76,10 +76,10 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 
 	// Build output — only include non-empty fields.
 	type inner struct {
-		HookEventName      string         `json:"hookEventName"`
-		PermissionDecision string         `json:"permissionDecision"`
-		UpdatedInput       map[string]any `json:"updatedInput,omitempty"`
-		SystemMessage      string         `json:"systemMessage,omitempty"`
+		HookEventName            string         `json:"hookEventName"`
+		PermissionDecision       string         `json:"permissionDecision"`
+		PermissionDecisionReason string         `json:"permissionDecisionReason,omitempty"`
+		UpdatedInput             map[string]any `json:"updatedInput,omitempty"`
 	}
 	type outer struct {
 		HookSpecificOutput inner `json:"hookSpecificOutput"`
@@ -87,10 +87,10 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 
 	out := outer{
 		HookSpecificOutput: inner{
-			HookEventName:      "PreToolUse",
-			PermissionDecision: ctx.Result.PermissionDecision,
-			UpdatedInput:       ctx.Result.UpdatedInput,
-			SystemMessage:      ctx.Result.SystemMessage,
+			HookEventName:            "PreToolUse",
+			PermissionDecision:       ctx.Result.PermissionDecision,
+			PermissionDecisionReason: ctx.Result.SystemMessage,
+			UpdatedInput:             ctx.Result.UpdatedInput,
 		},
 	}
 

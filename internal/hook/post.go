@@ -62,12 +62,26 @@ func HandlePost(r io.Reader, rulesPath string) (string, error) {
 		return "", fmt.Errorf("building normalizer: %w", err)
 	}
 
+	// Claude Code sends output in tool_response.stdout, not tool_output.
+	toolOutput := inp.ToolOutput
+	if toolOutput == "" && inp.ToolResponse != nil {
+		if stdout, ok := inp.ToolResponse["stdout"].(string); ok {
+			toolOutput = stdout
+		}
+		// For non-Bash tools, output may be in tool_response.content or tool_response directly.
+		if toolOutput == "" {
+			if content, ok := inp.ToolResponse["content"].(string); ok {
+				toolOutput = content
+			}
+		}
+	}
+
 	defaults := cfg.Defaults
 	ctx := &pipeline.PipelineContext{
 		Event:      "post",
 		ToolName:   inp.ToolName,
 		ToolInput:  inp.ToolInput,
-		ToolOutput: inp.ToolOutput,
+		ToolOutput: toolOutput,
 		Bag:        make(map[string]any),
 		Defaults:   &defaults,
 		Result:     &pipeline.HookResult{},
@@ -81,9 +95,9 @@ func HandlePost(r io.Reader, rulesPath string) (string, error) {
 	// Persist and optionally index the full output.
 	additionalContext := ""
 	if cfg.Defaults.Persist && inp.ToolUseID != "" {
-		path, persErr := PersistOutput(inp.ToolUseID, inp.ToolOutput)
+		path, persErr := PersistOutput(inp.ToolUseID, toolOutput)
 		if persErr == nil {
-			origLines := countLines(inp.ToolOutput)
+			origLines := countLines(toolOutput)
 			truncLines := countLines(ctx.Result.TruncatedOutput)
 			additionalContext = fmt.Sprintf("Output truncated (%d → %d lines). Full: %s", origLines, truncLines, path)
 
