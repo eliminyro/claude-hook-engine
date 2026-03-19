@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/hook"
+	"github.com/eliminyro/claude-hook-engine/internal/stages"
 )
 
 func writeTestRules(t *testing.T) string {
@@ -140,6 +142,31 @@ func TestPostToolUseTruncation(t *testing.T) {
 	}
 	if !strings.Contains(output, "output line 1") {
 		t.Error("truncated output should contain first line")
+	}
+}
+
+func TestProductionRulesLoad(t *testing.T) {
+	// Find rules.json relative to project root
+	rulesPath := "../../rules.json"
+	cfg, err := config.Load(rulesPath)
+	if err != nil {
+		t.Fatalf("failed to load production rules: %v", err)
+	}
+
+	// Verify all pre rules build
+	for _, rule := range cfg.Pre {
+		_, err := stages.BuildPipeline(rule.Pipeline)
+		if err != nil {
+			t.Errorf("pre rule %q failed to build: %v", rule.ID, err)
+		}
+	}
+
+	// Verify all post rules build
+	for _, rule := range cfg.Post {
+		_, err := stages.BuildPipeline(rule.Pipeline)
+		if err != nil {
+			t.Errorf("post rule %q failed to build: %v", rule.ID, err)
+		}
 	}
 }
 

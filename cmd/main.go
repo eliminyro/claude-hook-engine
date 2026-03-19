@@ -3,6 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"github.com/eliminyro/claude-hook-engine/internal/exec"
+	"github.com/eliminyro/claude-hook-engine/internal/hook"
 )
 
 func main() {
@@ -33,9 +37,36 @@ func main() {
 	}
 }
 
-// Stubs — will be replaced as we implement each handler
-func runPre() error  { return nil }
-func runPost() error { return nil }
+func rulesPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "hooks", "rules.json")
+}
+
+func runPre() error {
+	output, err := hook.HandlePre(os.Stdin, rulesPath())
+	if err != nil {
+		return err
+	}
+	if output != "" {
+		fmt.Print(output)
+	}
+	return nil
+}
+
+func runPost() error {
+	output, err := hook.HandlePost(os.Stdin, rulesPath())
+	if err != nil {
+		return err
+	}
+	if output != "" {
+		fmt.Print(output)
+	}
+	return nil
+}
+
 func runExec(args []string) error {
-	return fmt.Errorf("exec not implemented")
+	return exec.Run(args)
 }

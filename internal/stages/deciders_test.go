@@ -129,3 +129,34 @@ func TestRewriteExecNoTemplate(t *testing.T) {
 		t.Error("rewrite-exec should Skip when no templates present")
 	}
 }
+
+func TestAllPartsAllowed(t *testing.T) {
+	prefixes := []string{"curl ", "git ", "echo "}
+
+	tests := []struct {
+		command  string
+		expected pipeline.StageResult
+	}{
+		{"curl http://api.com && git status", pipeline.Done},
+		{"curl http://api.com && rm -rf /", pipeline.Skip},
+		{"echo hello || git log", pipeline.Done},
+		{"curl http://api.com | git log --oneline", pipeline.Done},
+		{"curl http://api.com; git status; echo done", pipeline.Done},
+	}
+
+	for _, tc := range tests {
+		stage, _ := stages.Build(config.StageConfig{
+			Stage: "all-parts-allowed", Prefixes: prefixes,
+		})
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		result, err := stage.Run(ctx)
+		if err != nil {
+			t.Errorf("command %q: unexpected error: %v", tc.command, err)
+			continue
+		}
+		if result != tc.expected {
+			t.Errorf("command %q: expected %d, got %d", tc.command, tc.expected, result)
+		}
+	}
+}

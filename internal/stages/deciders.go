@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"mvdan.cc/sh/v3/syntax"
+
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
 )
@@ -33,14 +35,9 @@ func init() {
 		return &rewriteExecStage{}, nil
 	})
 
-	for _, name := range []string{
-		"all-parts-allowed",
-	} {
-		n := name
-		register(n, func(cfg config.StageConfig) (pipeline.Stage, error) {
-			return &stubStage{name: n, stageType: pipeline.DeciderType}, nil
-		})
-	}
+	register("all-parts-allowed", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		return &allPartsAllowedStage{prefixes: cfg.Prefixes}, nil
+	})
 }
 
 // allowStage unconditionally permits the command.
@@ -126,4 +123,58 @@ func (s *rewriteExecStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 		"command": "claude-hook-engine exec -- " + rawCmd,
 	}
 	return pipeline.Done, nil
+}
+
+// allPartsAllowedStage uses shell AST parsing to check all simple commands against a prefix list.
+type allPartsAllowedStage struct {
+	prefixes []string
+}
+
+func (s *allPartsAllowedStage) Name() string             { return "all-parts-allowed" }
+func (s *allPartsAllowedStage) Type() pipeline.StageType { return pipeline.DeciderType }
+func (s *allPartsAllowedStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	cmd := ctx.Command()
+	f, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
+	if err != nil {
+		return pipeline.Skip, nil
+	}
+
+	allAllowed := true
+	syntax.Walk(f, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
+		}
+		// Get the first word of the command.
+		word := call.Args[0]
+		var sb strings.Builder
+		for _, part := range word.Parts {
+			if lit, ok := part.(*syntax.Lit); ok {
+				sb.WriteString(lit.Value)
+			}
+		}
+		name := sb.String()
+		if name == "" {
+			return true
+		}
+		matched := false
+		for _, prefix := range s.prefixes {
+			// prefix typically ends with a space; compare against the trimmed prefix word
+			trimmed := strings.TrimRight(prefix, " ")
+			if name == trimmed {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			allAllowed = false
+		}
+		return true
+	})
+
+	if allAllowed {
+		ctx.Result.PermissionDecision = "allow"
+		return pipeline.Done, nil
+	}
+	return pipeline.Skip, nil
 }

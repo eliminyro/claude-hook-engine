@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "defaults": {
+    "truncate": { "head": 15, "tail": 10, "max_lines": 30 },
+    "persist": true,
+    "index": true
+  },
+  "categories": {
+    "k8s":    { "truncate": { "max_lines": 20 } },
+    "git":    { "truncate": { "max_lines": 40 } },
+    "api":    { "truncate": { "max_lines": 50, "head": 20 } },
+    "docker": { "truncate": { "max_lines": 25 } },
+    "infra":  { "truncate": { "max_lines": 30 } }
+  },
+  "pre": [
+    {
+      "id": "dangerous-commands",
+      "tool": "Bash",
+      "description": "Block destructive commands",
+      "pipeline": [
+        { "stage": "command-contains", "args": ["rm -rf", "rm -fr", "dd if=", "mkfs.", "chmod 777", "shutdown", "reboot"] },
+        { "stage": "deny", "message": "Blocked: destructive command" }
+      ]
+    },
+    {
+      "id": "git-commit-ask",
+      "tool": "Bash",
+      "description": "Always ask before committing",
+      "pipeline": [
+        { "stage": "command-contains", "args": ["git commit"] },
+        { "stage": "ask" }
+      ]
+    },
+    {
+      "id": "template-rewrite",
+      "tool": "Bash",
+      "description": "Wrap template-bearing commands in exec",
+      "pipeline": [
+        { "stage": "has-template" },
+        { "stage": "rewrite-exec" }
+      ]
+    },
+    {
+      "id": "block-direct-exec",
+      "tool": "Bash",
+      "description": "Prevent direct claude-hook-engine exec calls",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["claude-hook-engine exec"] },
+        { "stage": "deny", "message": "Use template syntax {{vault:...}} instead of calling exec directly" }
+      ]
+    },
+    {
+      "id": "block-cat-no-pipe",
+      "tool": "Bash",
+      "description": "Redirect cat to Read tool when not piped",
+      "pipeline": [
+        { "stage": "has-pipe", "negate": true },
+        { "stage": "command-prefix", "args": ["cat "] },
+        { "stage": "redirect", "message": "Use the Read tool instead of cat", "tool": "Read" }
+      ]
+    },
+    {
+      "id": "block-grep-no-pipe",
+      "tool": "Bash",
+      "description": "Redirect grep/rg to Grep tool when not piped",
+      "pipeline": [
+        { "stage": "has-pipe", "negate": true },
+        { "stage": "command-prefix", "args": ["grep ", "rg "] },
+        { "stage": "redirect", "message": "Use the Grep tool instead", "tool": "Grep" }
+      ]
+    },
+    {
+      "id": "block-find-no-pipe",
+      "tool": "Bash",
+      "description": "Redirect find to Glob tool when not piped",
+      "pipeline": [
+        { "stage": "has-pipe", "negate": true },
+        { "stage": "command-prefix", "args": ["find "] },
+        { "stage": "redirect", "message": "Use the Glob tool instead of find", "tool": "Glob" }
+      ]
+    },
+    {
+      "id": "unbounded-git-log",
+      "tool": "Bash",
+      "description": "Catch unbounded git log/diff",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["git log", "git diff"] },
+        { "stage": "detect-intent" },
+        { "stage": "redirect-if", "condition": "intent=unbounded", "message": "Use ctx_execute for large git output" }
+      ]
+    },
+    {
+      "id": "subshell-allow",
+      "tool": "Bash",
+      "description": "Allow subshells when all parts are permitted",
+      "pipeline": [
+        { "stage": "has-subshell" },
+        { "stage": "all-parts-allowed", "prefixes": ["skill ", "curl ", "git ", "kubectl ", "docker ", "jq ", "yq ", "cat ", "head ", "tail ", "grep ", "find ", "ls ", "tree ", "mkdir ", "cp ", "xargs ", "go ", "npm ", "python ", "ruff ", "golangci-lint ", "gcloud ", "ansible ", "a11s ", "./bin/a11s ", "hilo ", "mcpl ", "claude-hook-engine ", "echo ", "bun ", "semgrep "] }
+      ]
+    }
+  ],
+  "post": [
+    {
+      "id": "kubectl-output",
+      "tool": "Bash",
+      "category": "k8s",
+      "description": "Smart truncation for kubectl",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["kubectl "] },
+        { "stage": "line-count" },
+        { "stage": "detect-format" },
+        { "stage": "truncate-smart" }
+      ]
+    },
+    {
+      "id": "terraform-output",
+      "tool": "Bash",
+      "category": "infra",
+      "description": "Smart truncation for terraform",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["terraform ", "tofu "] },
+        { "stage": "line-count" },
+        { "stage": "detect-format" },
+        { "stage": "truncate-smart" }
+      ]
+    },
+    {
+      "id": "docker-output",
+      "tool": "Bash",
+      "category": "docker",
+      "description": "Smart truncation for docker",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["docker "] },
+        { "stage": "line-count" },
+        { "stage": "detect-format" },
+        { "stage": "truncate-smart" }
+      ]
+    },
+    {
+      "id": "smart-truncate-bash",
+      "tool": "Bash",
+      "description": "Catch-all: auto-detect and truncate large Bash output",
+      "pipeline": [
+        { "stage": "line-count" },
+        { "stage": "detect-format" },
+        { "stage": "truncate-smart" }
+      ]
+    },
+    {
+      "id": "truncate-read",
+      "tool": "Read",
+      "description": "Truncate large file reads",
+      "pipeline": [
+        { "stage": "line-count" },
+        { "stage": "detect-format" },
+        { "stage": "truncate-smart" }
+      ]
+    },
+    {
+      "id": "truncate-webfetch",
+      "tool": "WebFetch",
+      "category": "api",
+      "description": "Truncate large web responses",
+      "pipeline": [
+        { "stage": "line-count" },
+        { "stage": "detect-format" },
+        { "stage": "truncate-smart" }
+      ]
+    }
+  ]
+}
