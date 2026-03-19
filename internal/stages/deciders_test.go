@@ -96,3 +96,36 @@ func TestRedirectIfNoMatch(t *testing.T) {
 		t.Error("redirect-if should Skip when condition doesn't match")
 	}
 }
+
+func TestRewriteExec(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{Stage: "rewrite-exec"})
+	rawCmd := "cd /tmp && curl -H '{{vault:ansible@common:key}}' https://api.com"
+	ctx := newCtx(rawCmd)
+	ctx.Bag["command"] = "curl -H '{{vault:ansible@common:key}}' https://api.com" // normalized
+	ctx.Bag["has_template"] = true
+	result, _ := stage.Run(ctx)
+	if result != pipeline.Done {
+		t.Error("rewrite-exec should return Done")
+	}
+	if ctx.Result.PermissionDecision != "allow" {
+		t.Errorf("expected 'allow', got '%s'", ctx.Result.PermissionDecision)
+	}
+	cmd, ok := ctx.Result.UpdatedInput["command"].(string)
+	if !ok {
+		t.Fatal("expected updatedInput.command to be set")
+	}
+	expected := "claude-hook-engine exec -- " + rawCmd
+	if cmd != expected {
+		t.Errorf("expected %q, got %q", expected, cmd)
+	}
+}
+
+func TestRewriteExecNoTemplate(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{Stage: "rewrite-exec"})
+	ctx := newCtx("curl https://api.com")
+	ctx.Bag["command"] = "curl https://api.com"
+	result, _ := stage.Run(ctx)
+	if result != pipeline.Skip {
+		t.Error("rewrite-exec should Skip when no templates present")
+	}
+}

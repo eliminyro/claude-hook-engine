@@ -29,8 +29,12 @@ func init() {
 		return &redirectIfStage{condition: cfg.Condition, message: cfg.Message, tool: cfg.Tool}, nil
 	})
 
+	register("rewrite-exec", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		return &rewriteExecStage{}, nil
+	})
+
 	for _, name := range []string{
-		"rewrite-exec", "all-parts-allowed",
+		"all-parts-allowed",
 	} {
 		n := name
 		register(n, func(cfg config.StageConfig) (pipeline.Stage, error) {
@@ -103,5 +107,23 @@ func (s *redirectIfStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResu
 	}
 	ctx.Result.PermissionDecision = "deny"
 	ctx.Result.SystemMessage = fmt.Sprintf("Suggestion: Use %s tool. %s", s.tool, s.message)
+	return pipeline.Done, nil
+}
+
+// rewriteExecStage rewrites commands containing secret templates to run via claude-hook-engine exec.
+type rewriteExecStage struct{}
+
+func (s *rewriteExecStage) Name() string             { return "rewrite-exec" }
+func (s *rewriteExecStage) Type() pipeline.StageType { return pipeline.DeciderType }
+func (s *rewriteExecStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	hasTemplate, _ := ctx.Bag["has_template"].(bool)
+	if !hasTemplate {
+		return pipeline.Skip, nil
+	}
+	rawCmd, _ := ctx.ToolInput["command"].(string)
+	ctx.Result.PermissionDecision = "allow"
+	ctx.Result.UpdatedInput = map[string]any{
+		"command": "claude-hook-engine exec -- " + rawCmd,
+	}
 	return pipeline.Done, nil
 }
