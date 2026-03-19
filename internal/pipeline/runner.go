@@ -2,9 +2,10 @@ package pipeline
 
 // RuleExec is a compiled rule ready for execution.
 type RuleExec struct {
-	ID     string
-	Tool   string
-	Stages []Stage
+	ID       string
+	Tool     string
+	Stages   []Stage
+	Category *CategoryConfig // optional resolved category for transformers
 }
 
 // RunPipeline executes rules against a context. First match wins.
@@ -26,6 +27,8 @@ func RunPipeline(ctx *PipelineContext, rules []RuleExec, normalizer Stage) bool 
 }
 
 func runRule(ctx *PipelineContext, rule RuleExec) bool {
+	// Set category so transformer stages can pick up per-category truncation config.
+	ctx.Category = rule.Category
 	for _, stage := range rule.Stages {
 		result, err := stage.Run(ctx)
 		if err != nil {
