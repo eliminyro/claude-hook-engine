@@ -49,3 +49,50 @@ func TestAskDecider(t *testing.T) {
 		t.Errorf("expected 'ask', got '%s'", ctx.Result.PermissionDecision)
 	}
 }
+
+func TestRedirectDecider(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{
+		Stage: "redirect", Message: "Use the Read tool instead of cat", Tool: "Read",
+	})
+	ctx := newCtx("cat /tmp/foo")
+	ctx.Bag["command"] = "cat /tmp/foo"
+	result, _ := stage.Run(ctx)
+	if result != pipeline.Done {
+		t.Error("redirect should return Done")
+	}
+	if ctx.Result.PermissionDecision != "deny" {
+		t.Errorf("expected 'deny', got '%s'", ctx.Result.PermissionDecision)
+	}
+	if ctx.Result.SystemMessage == "" {
+		t.Error("redirect should set systemMessage")
+	}
+}
+
+func TestRedirectIfMatches(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{
+		Stage: "redirect-if", Condition: "intent=unbounded", Message: "Use ctx_execute",
+	})
+	ctx := newCtx("git log")
+	ctx.Bag["command"] = "git log"
+	ctx.Bag["intent"] = "unbounded"
+	result, _ := stage.Run(ctx)
+	if result != pipeline.Done {
+		t.Error("redirect-if should return Done when condition matches")
+	}
+	if ctx.Result.PermissionDecision != "deny" {
+		t.Errorf("expected 'deny', got '%s'", ctx.Result.PermissionDecision)
+	}
+}
+
+func TestRedirectIfNoMatch(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{
+		Stage: "redirect-if", Condition: "intent=unbounded", Message: "Use ctx_execute",
+	})
+	ctx := newCtx("git log -5")
+	ctx.Bag["command"] = "git log -5"
+	ctx.Bag["intent"] = "bounded"
+	result, _ := stage.Run(ctx)
+	if result != pipeline.Skip {
+		t.Error("redirect-if should Skip when condition doesn't match")
+	}
+}

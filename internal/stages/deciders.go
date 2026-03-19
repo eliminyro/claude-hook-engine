@@ -1,6 +1,9 @@
 package stages
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
 )
@@ -18,8 +21,16 @@ func init() {
 		return &askStage{}, nil
 	})
 
+	register("redirect", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		return &redirectStage{message: cfg.Message, tool: cfg.Tool}, nil
+	})
+
+	register("redirect-if", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		return &redirectIfStage{condition: cfg.Condition, message: cfg.Message, tool: cfg.Tool}, nil
+	})
+
 	for _, name := range []string{
-		"redirect", "redirect-if", "rewrite-exec", "all-parts-allowed",
+		"rewrite-exec", "all-parts-allowed",
 	} {
 		n := name
 		register(n, func(cfg config.StageConfig) (pipeline.Stage, error) {
@@ -58,5 +69,39 @@ func (s *askStage) Name() string             { return "ask" }
 func (s *askStage) Type() pipeline.StageType { return pipeline.DeciderType }
 func (s *askStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	ctx.Result.PermissionDecision = "ask"
+	return pipeline.Done, nil
+}
+
+// redirectStage denies and suggests an alternative tool.
+type redirectStage struct {
+	message string
+	tool    string
+}
+
+func (s *redirectStage) Name() string             { return "redirect" }
+func (s *redirectStage) Type() pipeline.StageType { return pipeline.DeciderType }
+func (s *redirectStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	ctx.Result.PermissionDecision = "deny"
+	ctx.Result.SystemMessage = fmt.Sprintf("Suggestion: Use %s tool. %s", s.tool, s.message)
+	return pipeline.Done, nil
+}
+
+// redirectIfStage conditionally redirects based on a bag key=value condition.
+type redirectIfStage struct {
+	condition string
+	message   string
+	tool      string
+}
+
+func (s *redirectIfStage) Name() string             { return "redirect-if" }
+func (s *redirectIfStage) Type() pipeline.StageType { return pipeline.DeciderType }
+func (s *redirectIfStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	key, value, _ := strings.Cut(s.condition, "=")
+	bagVal, _ := ctx.Bag[key].(string)
+	if bagVal != value {
+		return pipeline.Skip, nil
+	}
+	ctx.Result.PermissionDecision = "deny"
+	ctx.Result.SystemMessage = fmt.Sprintf("Suggestion: Use %s tool. %s", s.tool, s.message)
 	return pipeline.Done, nil
 }
