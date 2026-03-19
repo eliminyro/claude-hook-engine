@@ -18,6 +18,66 @@ func newCtx(command string) *pipeline.PipelineContext {
 	}
 }
 
+func TestCommandPrefix(t *testing.T) {
+	tests := []struct {
+		command  string
+		args     []string
+		expected pipeline.StageResult
+	}{
+		{"cat /tmp/foo.txt", []string{"cat "}, pipeline.Continue},
+		{"grep pattern file", []string{"cat ", "grep "}, pipeline.Continue},
+		{"ls -la", []string{"cat "}, pipeline.Skip},
+	}
+
+	for _, tc := range tests {
+		stage, _ := stages.Build(config.StageConfig{Stage: "command-prefix", Args: tc.args})
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		result, err := stage.Run(ctx)
+		if err != nil {
+			t.Errorf("command %q: unexpected error: %v", tc.command, err)
+		}
+		if result != tc.expected {
+			t.Errorf("command %q with prefixes %v: expected %d, got %d", tc.command, tc.args, tc.expected, result)
+		}
+	}
+}
+
+func TestCommandPrefixNegate(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{Stage: "command-prefix", Args: []string{"cat "}, Negate: true})
+	ctx := newCtx("cat /tmp/foo")
+	ctx.Bag["command"] = "cat /tmp/foo"
+	result, _ := stage.Run(ctx)
+	if result != pipeline.Skip {
+		t.Error("negated prefix match should Skip")
+	}
+}
+
+func TestCommandContains(t *testing.T) {
+	tests := []struct {
+		command  string
+		args     []string
+		expected pipeline.StageResult
+	}{
+		{"rm -rf /", []string{"rm -rf", "rm -fr"}, pipeline.Continue},
+		{"ls -la", []string{"rm -rf"}, pipeline.Skip},
+		{"echo rm -rf", []string{"rm -rf"}, pipeline.Continue},
+	}
+
+	for _, tc := range tests {
+		stage, _ := stages.Build(config.StageConfig{Stage: "command-contains", Args: tc.args})
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		result, err := stage.Run(ctx)
+		if err != nil {
+			t.Errorf("command %q: unexpected error: %v", tc.command, err)
+		}
+		if result != tc.expected {
+			t.Errorf("command %q with args %v: expected %d, got %d", tc.command, tc.args, tc.expected, result)
+		}
+	}
+}
+
 func TestNormalizeCommand(t *testing.T) {
 	tests := []struct {
 		input    string
