@@ -171,6 +171,74 @@ func TestHasTemplate(t *testing.T) {
 	}
 }
 
+func TestDetectFormat(t *testing.T) {
+	tests := []struct {
+		output   string
+		expected string
+	}{
+		{`{"key": "value"}`, "json"},
+		{`[{"id": 1}, {"id": 2}]`, "json"},
+		{"---\nkey: value\n", "yaml"},
+		{"NAME   READY   STATUS\npod1   1/1     Running\n", "table"},
+		{"Traceback (most recent call last):\n  File \"test.py\"\nValueError: bad", "stacktrace"},
+		{"just some random text\n", "text"},
+		{"name,age,city\nAlice,30,NYC\nBob,25,LA\n", "csv"},
+	}
+
+	stage, _ := stages.Build(config.StageConfig{Stage: "detect-format"})
+	for _, tc := range tests {
+		ctx := &pipeline.PipelineContext{
+			Event: "post", ToolName: "Bash",
+			ToolInput: map[string]any{}, ToolOutput: tc.output,
+			Bag: make(map[string]any), Result: &pipeline.HookResult{},
+		}
+		stage.Run(ctx)
+		got := ctx.Bag["format"]
+		if got != tc.expected {
+			t.Errorf("output starting with %q: expected format %q, got %q", tc.output[:min(40, len(tc.output))], tc.expected, got)
+		}
+	}
+}
+
+func TestDetectIntent(t *testing.T) {
+	tests := []struct {
+		command  string
+		expected string
+	}{
+		{"git log", "unbounded"},
+		{"git log -5", "bounded"},
+		{"git log --max-count=10", "bounded"},
+		{"git log | head -20", "bounded"},
+		{"git diff", "unbounded"},
+		{"git diff --stat", "bounded"},
+		{"kubectl get pods", "unbounded"},
+	}
+
+	stage, _ := stages.Build(config.StageConfig{Stage: "detect-intent"})
+	for _, tc := range tests {
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		stage.Run(ctx)
+		got := ctx.Bag["intent"]
+		if got != tc.expected {
+			t.Errorf("command %q: expected intent %q, got %q", tc.command, tc.expected, got)
+		}
+	}
+}
+
+func TestLineCount(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{Stage: "line-count"})
+	ctx := &pipeline.PipelineContext{
+		Event: "post", ToolOutput: "line1\nline2\nline3\n",
+		Bag: make(map[string]any), Result: &pipeline.HookResult{},
+	}
+	stage.Run(ctx)
+	got := ctx.Bag["lines"].(int)
+	if got != 3 {
+		t.Errorf("expected 3 lines, got %d", got)
+	}
+}
+
 func TestNormalizeCommand(t *testing.T) {
 	tests := []struct {
 		input    string
