@@ -133,7 +133,11 @@ type allPartsAllowedStage struct {
 func (s *allPartsAllowedStage) Name() string             { return "all-parts-allowed" }
 func (s *allPartsAllowedStage) Type() pipeline.StageType { return pipeline.DeciderType }
 func (s *allPartsAllowedStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
-	cmd := ctx.Command()
+	// Use raw command so cd and other stripped prefixes are included in the check.
+	cmd, _ := ctx.ToolInput["command"].(string)
+	if cmd == "" {
+		cmd = ctx.Command()
+	}
 	f, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
 	if err != nil {
 		return pipeline.Skip, nil

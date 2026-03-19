@@ -186,18 +186,28 @@ func (s *hasPipeStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult,
 	return pipeline.Skip, nil
 }
 
-// hasSubshellStage detects $( or backtick outside of quotes.
+// hasSubshellStage detects compound command syntax: $(), backticks, &&, ||, or ; outside of quotes.
+// Checks the raw command (before normalization) so cd-prefix stripping doesn't hide compounds.
 type hasSubshellStage struct{ negate bool }
 
 func (s *hasSubshellStage) Name() string             { return "has-subshell" }
 func (s *hasSubshellStage) Type() pipeline.StageType { return pipeline.ClassifierType }
 func (s *hasSubshellStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
-	cmd := ctx.Command()
+	cmd, _ := ctx.ToolInput["command"].(string)
 	found := detectOutsideQuotes(cmd, func(i int, cmd string) bool {
 		if cmd[i] == '`' {
 			return true
 		}
 		if cmd[i] == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
+			return true
+		}
+		if cmd[i] == ';' {
+			return true
+		}
+		if cmd[i] == '&' && i+1 < len(cmd) && cmd[i+1] == '&' {
+			return true
+		}
+		if cmd[i] == '|' && i+1 < len(cmd) && cmd[i+1] == '|' {
 			return true
 		}
 		return false

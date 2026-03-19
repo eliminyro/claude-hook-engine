@@ -102,6 +102,29 @@ func TestIntegrationPreBlockDirectExec(t *testing.T) {
 	}
 }
 
+func TestIntegrationPreCompoundAllowed(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"cd /tmp && git diff --stat"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "allow") {
+		t.Errorf("expected allow for compound cd && git, got: %s", output)
+	}
+}
+
+func TestIntegrationPreCompoundDenied(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"cd /tmp && evil-binary --steal-data"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// all-parts-allowed should Skip (not all parts match), so no match → passthrough
+	if output != "" {
+		t.Errorf("expected passthrough for compound with unknown command, got: %s", output)
+	}
+}
+
 func TestIntegrationPreBoundedGitLogPassthrough(t *testing.T) {
 	input := `{"tool_name":"Bash","tool_input":{"command":"git log -5"}}`
 	output, err := runPreWithRules(input, productionRulesPath())

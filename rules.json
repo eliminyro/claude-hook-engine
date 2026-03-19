@@ -104,7 +104,7 @@
       "description": "Allow subshells when all parts are permitted",
       "pipeline": [
         { "stage": "has-subshell" },
-        { "stage": "all-parts-allowed", "prefixes": ["skill ", "curl ", "git ", "kubectl ", "docker ", "jq ", "yq ", "cat ", "head ", "tail ", "grep ", "find ", "ls ", "tree ", "mkdir ", "cp ", "xargs ", "go ", "npm ", "python ", "ruff ", "golangci-lint ", "gcloud ", "ansible ", "a11s ", "./bin/a11s ", "hilo ", "mcpl ", "claude-hook-engine ", "echo ", "bun ", "semgrep "] }
+        { "stage": "all-parts-allowed", "prefixes": ["cd ", "skill ", "curl ", "git ", "kubectl ", "docker ", "jq ", "yq ", "cat ", "head ", "tail ", "grep ", "find ", "ls ", "tree ", "mkdir ", "cp ", "xargs ", "go ", "npm ", "python ", "ruff ", "golangci-lint ", "gcloud ", "ansible ", "a11s ", "./bin/a11s ", "hilo ", "mcpl ", "claude-hook-engine ", "echo ", "bun ", "semgrep "] }
       ]
     }
   ],
