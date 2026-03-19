@@ -100,14 +100,21 @@ func HandlePost(r io.Reader, rulesPath string) (string, error) {
 		}
 	}
 
-	type postOutput struct {
-		TruncatedOutput   string `json:"truncatedOutput"`
+	type postInner struct {
+		HookEventName    string `json:"hookEventName"`
+		TruncatedOutput  string `json:"truncatedOutput"`
 		AdditionalContext string `json:"additionalContext,omitempty"`
+	}
+	type postOutput struct {
+		HookSpecificOutput postInner `json:"hookSpecificOutput"`
 	}
 
 	out := postOutput{
-		TruncatedOutput:   ctx.Result.TruncatedOutput,
-		AdditionalContext: additionalContext,
+		HookSpecificOutput: postInner{
+			HookEventName:    "PostToolUse",
+			TruncatedOutput:  ctx.Result.TruncatedOutput,
+			AdditionalContext: additionalContext,
+		},
 	}
 
 	b, err := json.Marshal(out)

@@ -33,14 +33,36 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestIntegrationPreDenyRmRf(t *testing.T) {
+func TestIntegrationPreAskRmRf(t *testing.T) {
 	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}`
 	output, err := runPreWithRules(input, productionRulesPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output, "deny") {
-		t.Errorf("expected deny, got: %s", output)
+	if !strings.Contains(output, "ask") {
+		t.Errorf("expected ask, got: %s", output)
+	}
+}
+
+func TestIntegrationPreAskRmFile(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"rm -f /tmp/somefile"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "ask") {
+		t.Errorf("expected ask, got: %s", output)
+	}
+}
+
+func TestIntegrationPreAskRmPlain(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"rm myfile.txt"}}`
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "ask") {
+		t.Errorf("expected ask, got: %s", output)
 	}
 }
 

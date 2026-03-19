@@ -18,8 +18,17 @@
       "tool": "Bash",
       "description": "Block destructive commands",
       "pipeline": [
-        { "stage": "command-contains", "args": ["rm -rf", "rm -fr", "dd if=", "mkfs.", "chmod 777", "shutdown", "reboot"] },
+        { "stage": "command-contains", "args": ["dd if=", "mkfs.", "chmod 777", "shutdown", "reboot"] },
         { "stage": "deny", "message": "Blocked: destructive command" }
+      ]
+    },
+    {
+      "id": "rm-ask",
+      "tool": "Bash",
+      "description": "Ask before any rm command",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["rm "] },
+        { "stage": "ask" }
       ]
     },
     {
