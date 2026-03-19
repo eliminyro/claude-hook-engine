@@ -149,30 +149,13 @@ func TestIntegrationPreEchoPassthrough(t *testing.T) {
 	}
 }
 
-func TestIntegrationPostTruncation(t *testing.T) {
-	lines := make([]string, 50)
-	for i := range lines {
-		lines[i] = "output line"
-	}
-	bigOutput := strings.Join(lines, "\n") + "\n"
-
-	input := `{"tool_name":"Bash","tool_input":{"command":"ls -la"},"tool_output":` + jsonEscape(bigOutput) + `,"tool_use_id":"int-test","session_id":"s","cwd":"/tmp"}`
-	output, err := runPostWithRules(input, productionRulesPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output, "truncatedOutput") {
-		t.Errorf("expected truncation, got: %s", output)
-	}
-}
-
-func TestIntegrationPostSmallOutput(t *testing.T) {
-	input := `{"tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_output":"hi\n","tool_use_id":"int-test-2","session_id":"s","cwd":"/tmp"}`
+func TestIntegrationPostNoRules(t *testing.T) {
+	input := `{"tool_name":"Bash","tool_input":{"command":"ls -la"},"tool_output":"line1\nline2\n","tool_use_id":"int-test","session_id":"s","cwd":"/tmp"}`
 	output, err := runPostWithRules(input, productionRulesPath())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if output != "" {
-		t.Errorf("expected passthrough, got: %s", output)
+		t.Errorf("expected passthrough with no post rules, got: %s", output)
 	}
 }

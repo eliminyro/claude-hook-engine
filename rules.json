@@ -1,17 +1,6 @@
 {
   "version": 1,
-  "defaults": {
-    "truncate": { "head": 15, "tail": 10, "max_lines": 30 },
-    "persist": true,
-    "index": true
-  },
-  "categories": {
-    "k8s":    { "truncate": { "max_lines": 20 } },
-    "git":    { "truncate": { "max_lines": 40 } },
-    "api":    { "truncate": { "max_lines": 50, "head": 20 } },
-    "docker": { "truncate": { "max_lines": 25 } },
-    "infra":  { "truncate": { "max_lines": 30 } }
-  },
+  "defaults": {},
   "pre": [
     {
       "id": "dangerous-commands",
@@ -108,73 +97,5 @@
       ]
     }
   ],
-  "post": [
-    {
-      "id": "kubectl-output",
-      "tool": "Bash",
-      "category": "k8s",
-      "description": "Smart truncation for kubectl",
-      "pipeline": [
-        { "stage": "command-prefix", "args": ["kubectl "] },
-        { "stage": "line-count" },
-        { "stage": "detect-format" },
-        { "stage": "truncate-smart" }
-      ]
-    },
-    {
-      "id": "terraform-output",
-      "tool": "Bash",
-      "category": "infra",
-      "description": "Smart truncation for terraform",
-      "pipeline": [
-        { "stage": "command-prefix", "args": ["terraform ", "tofu "] },
-        { "stage": "line-count" },
-        { "stage": "detect-format" },
-        { "stage": "truncate-smart" }
-      ]
-    },
-    {
-      "id": "docker-output",
-      "tool": "Bash",
-      "category": "docker",
-      "description": "Smart truncation for docker",
-      "pipeline": [
-        { "stage": "command-prefix", "args": ["docker "] },
-        { "stage": "line-count" },
-        { "stage": "detect-format" },
-        { "stage": "truncate-smart" }
-      ]
-    },
-    {
-      "id": "smart-truncate-bash",
-      "tool": "Bash",
-      "description": "Catch-all: auto-detect and truncate large Bash output",
-      "pipeline": [
-        { "stage": "line-count" },
-        { "stage": "detect-format" },
-        { "stage": "truncate-smart" }
-      ]
-    },
-    {
-      "id": "truncate-read",
-      "tool": "Read",
-      "description": "Truncate large file reads",
-      "pipeline": [
-        { "stage": "line-count" },
-        { "stage": "detect-format" },
-        { "stage": "truncate-smart" }
-      ]
-    },
-    {
-      "id": "truncate-webfetch",
-      "tool": "WebFetch",
-      "category": "api",
-      "description": "Truncate large web responses",
-      "pipeline": [
-        { "stage": "line-count" },
-        { "stage": "detect-format" },
-        { "stage": "truncate-smart" }
-      ]
-    }
-  ]
+  "post": []
 }
