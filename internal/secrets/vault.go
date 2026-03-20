@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
 )
 
 // VaultProvider fetches secrets from HashiCorp Vault KV v2.
@@ -23,9 +25,8 @@ func NewVaultProvider(addr, token string) *VaultProvider {
 	}
 }
 
-// Fetch retrieves a secret from Vault KV v2.
+// Fetch retrieves a specific field from Vault KV v2.
 // URL: GET {addr}/v1/{mount}/data/{path}
-// Returns the specific field value, or all fields as JSON if Field is empty.
 func (p *VaultProvider) Fetch(ref TemplateRef) (string, error) {
 	url := fmt.Sprintf("%s/v1/%s/data/%s", p.addr, ref.Mount, ref.Path)
 
@@ -65,16 +66,6 @@ func (p *VaultProvider) Fetch(ref TemplateRef) (string, error) {
 		return "", fmt.Errorf("vault: no data found at %s/%s", ref.Mount, ref.Path)
 	}
 
-	// Return all fields as JSON if no specific field requested
-	if ref.Field == "" {
-		out, err := jsonMarshal(data)
-		if err != nil {
-			return "", fmt.Errorf("vault: marshal all fields: %w", err)
-		}
-		return out, nil
-	}
-
-	// Return specific field
 	val, ok := data[ref.Field]
 	if !ok {
 		return "", fmt.Errorf("vault: field %q not found at %s/%s", ref.Field, ref.Mount, ref.Path)
@@ -90,4 +81,110 @@ func (p *VaultProvider) Fetch(ref TemplateRef) (string, error) {
 		}
 		return out, nil
 	}
+}
+
+// ListEngines returns KV v2 engine mount paths.
+// GET {addr}/v1/sys/mounts
+func (p *VaultProvider) ListEngines() ([]string, error) {
+	body, err := p.doRequest(http.MethodGet, p.addr+"/v1/sys/mounts")
+	if err != nil {
+		return nil, fmt.Errorf("vault: list engines: %w", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("vault: parse mounts: %w", err)
+	}
+
+	var engines []string
+	for name, v := range result {
+		info, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := info["type"].(string); t == "kv" {
+			engines = append(engines, strings.TrimSuffix(name, "/"))
+		}
+	}
+	sort.Strings(engines)
+	return engines, nil
+}
+
+// ListPaths returns secret paths within a KV v2 mount.
+// LIST {addr}/v1/{mount}/metadata/
+func (p *VaultProvider) ListPaths(mount string) ([]string, error) {
+	body, err := p.doRequest("LIST", fmt.Sprintf("%s/v1/%s/metadata/", p.addr, mount))
+	if err != nil {
+		return nil, fmt.Errorf("vault: list paths in %s: %w", mount, err)
+	}
+	return p.parseKeyList(body)
+}
+
+// ListFields returns field names at a path without exposing values.
+// GET {addr}/v1/{mount}/metadata/{path}
+func (p *VaultProvider) ListFields(mount, path string) ([]string, error) {
+	body, err := p.doRequest(http.MethodGet, fmt.Sprintf("%s/v1/%s/metadata/%s", p.addr, mount, path))
+	if err != nil {
+		return nil, fmt.Errorf("vault: list fields at %s/%s: %w", mount, path, err)
+	}
+
+	// metadata endpoint doesn't return field names directly;
+	// we need to hit the data endpoint and extract keys only
+	dataBody, err := p.doRequest(http.MethodGet, fmt.Sprintf("%s/v1/%s/data/%s", p.addr, mount, path))
+	if err != nil {
+		return nil, fmt.Errorf("vault: read data keys at %s/%s: %w", mount, path, err)
+	}
+	_ = body // metadata confirmed the path exists
+
+	var result struct {
+		Data struct {
+			Data map[string]any `json:"data"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(dataBody, &result); err != nil {
+		return nil, fmt.Errorf("vault: parse data keys: %w", err)
+	}
+
+	var fields []string
+	for k := range result.Data.Data {
+		fields = append(fields, k)
+	}
+	sort.Strings(fields)
+	return fields, nil
+}
+
+// doRequest performs an HTTP request with the Vault token and returns the body.
+func (p *VaultProvider) doRequest(method, url string) ([]byte, error) {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Vault-Token", p.token)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status %d for %s", resp.StatusCode, url)
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// parseKeyList parses a Vault LIST response with keys array.
+func (p *VaultProvider) parseKeyList(body []byte) ([]string, error) {
+	var result struct {
+		Data struct {
+			Keys []string `json:"keys"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parse key list: %w", err)
+	}
+	keys := result.Data.Keys
+	sort.Strings(keys)
+	return keys, nil
 }

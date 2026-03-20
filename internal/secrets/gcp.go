@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
@@ -66,4 +67,27 @@ func (p *GCPProvider) Fetch(ref TemplateRef) (string, error) {
 	}
 
 	return string(decoded), nil
+}
+
+// ListSecrets returns secret names in a GCP project (no values).
+func (p *GCPProvider) ListSecrets(project string) ([]string, error) {
+	args := []string{
+		"secrets", "list",
+		"--project=" + project,
+		"--format=value(name)",
+	}
+
+	out, err := p.cmdRunner("gcloud", args...)
+	if err != nil {
+		return nil, fmt.Errorf("gcp: list secrets in %s: %w", project, err)
+	}
+
+	raw := strings.TrimSpace(string(out))
+	if raw == "" {
+		return nil, nil
+	}
+
+	names := strings.Split(raw, "\n")
+	sort.Strings(names)
+	return names, nil
 }

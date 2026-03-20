@@ -6,7 +6,7 @@ import (
 	"github.com/eliminyro/claude-hook-engine/internal/secrets"
 )
 
-func TestParseVaultTemplates(t *testing.T) {
+func TestParseVaultFetch(t *testing.T) {
 	refs, err := secrets.ParseTemplates("curl -H '{{vault:ansible@common:api_key}}' https://api.com")
 	if err != nil {
 		t.Fatal(err)
@@ -18,19 +18,54 @@ func TestParseVaultTemplates(t *testing.T) {
 	if r.Provider != "vault" || r.Mount != "ansible" || r.Path != "common" || r.Field != "api_key" {
 		t.Errorf("unexpected ref: %+v", r)
 	}
+	if r.Mode != secrets.ModeFetch {
+		t.Errorf("expected ModeFetch, got %s", r.Mode)
+	}
 }
 
-func TestParseVaultNoField(t *testing.T) {
+func TestParseVaultListEngines(t *testing.T) {
+	refs, err := secrets.ParseTemplates("{{vault:}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 ref, got %d", len(refs))
+	}
+	r := refs[0]
+	if r.Mode != secrets.ModeList || r.Level != secrets.LevelEngines {
+		t.Errorf("expected list/engines, got %s/%s", r.Mode, r.Level)
+	}
+}
+
+func TestParseVaultListPaths(t *testing.T) {
+	refs, err := secrets.ParseTemplates("{{vault:ansible}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 ref, got %d", len(refs))
+	}
+	r := refs[0]
+	if r.Mode != secrets.ModeList || r.Level != secrets.LevelPaths || r.Mount != "ansible" {
+		t.Errorf("expected list/paths for ansible, got: %+v", r)
+	}
+}
+
+func TestParseVaultListFields(t *testing.T) {
 	refs, err := secrets.ParseTemplates("{{vault:ansible@common}}")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(refs) != 1 || refs[0].Field != "" {
-		t.Errorf("expected empty field, got: %+v", refs[0])
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 ref, got %d", len(refs))
+	}
+	r := refs[0]
+	if r.Mode != secrets.ModeList || r.Level != secrets.LevelFields || r.Mount != "ansible" || r.Path != "common" {
+		t.Errorf("expected list/fields for ansible@common, got: %+v", r)
 	}
 }
 
-func TestParseGCPTemplates(t *testing.T) {
+func TestParseGCPFetch(t *testing.T) {
 	refs, err := secrets.ParseTemplates("{{gcp:myproject/secret-name:v2}}")
 	if err != nil {
 		t.Fatal(err)
@@ -42,15 +77,39 @@ func TestParseGCPTemplates(t *testing.T) {
 	if r.Provider != "gcp" || r.Project != "myproject" || r.Secret != "secret-name" || r.Version != "v2" {
 		t.Errorf("unexpected ref: %+v", r)
 	}
+	if r.Mode != secrets.ModeFetch {
+		t.Errorf("expected ModeFetch, got %s", r.Mode)
+	}
 }
 
-func TestParseGCPNoVersion(t *testing.T) {
+func TestParseGCPFetchNoVersion(t *testing.T) {
 	refs, err := secrets.ParseTemplates("{{gcp:myproject/secret-name}}")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(refs) != 1 || refs[0].Version != "" {
-		t.Errorf("expected empty version, got: %+v", refs[0])
+	if len(refs) != 1 || refs[0].Version != "" || refs[0].Mode != secrets.ModeFetch {
+		t.Errorf("expected fetch with empty version, got: %+v", refs[0])
+	}
+}
+
+func TestParseGCPListSecrets(t *testing.T) {
+	refs, err := secrets.ParseTemplates("{{gcp:myproject}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 ref, got %d", len(refs))
+	}
+	r := refs[0]
+	if r.Mode != secrets.ModeList || r.Level != secrets.LevelPaths || r.Project != "myproject" {
+		t.Errorf("expected list/paths for myproject, got: %+v", r)
+	}
+}
+
+func TestParseGCPEmptyError(t *testing.T) {
+	_, err := secrets.ParseTemplates("{{gcp:}}")
+	if err == nil {
+		t.Error("expected error for empty gcp template")
 	}
 }
 
@@ -76,15 +135,27 @@ func TestParseNoTemplates(t *testing.T) {
 
 func TestParseMalformed(t *testing.T) {
 	malformed := []string{
-		"{{vault:bad}}",       // No mount@path
-		"{{vault:}}",         // Empty
-		"{{unknown:foo/bar}}", // Unknown provider
+		"{{vault:@}}",      // Empty mount
+		"{{vault:mount@}}", // Empty path after @
+		"{{gcp:/secret}}",  // Empty project
+		"{{gcp:project/}}", // Empty secret
 	}
 	for _, input := range malformed {
 		_, err := secrets.ParseTemplates(input)
 		if err == nil {
 			t.Errorf("input %q: expected error for malformed template", input)
 		}
+	}
+}
+
+func TestParseUnknownProviderIgnored(t *testing.T) {
+	// Unknown providers are not matched by the regex and silently ignored
+	refs, err := secrets.ParseTemplates("{{unknown:foo/bar}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("expected 0 refs for unknown provider, got %d", len(refs))
 	}
 }
 

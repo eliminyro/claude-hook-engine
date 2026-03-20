@@ -1,11 +1,15 @@
 package stages
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
+	"github.com/eliminyro/claude-hook-engine/internal/secrets"
 )
 
 func init() {
@@ -32,6 +36,10 @@ func init() {
 
 	register("has-template", func(cfg config.StageConfig) (pipeline.Stage, error) {
 		return &hasTemplateStage{negate: cfg.Negate}, nil
+	})
+
+	register("template-leaks-value", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		return &templateLeaksValueStage{allowedPrefixes: cfg.Prefixes}, nil
 	})
 
 	register("detect-format", func(cfg config.StageConfig) (pipeline.Stage, error) {
@@ -223,21 +231,26 @@ func (s *hasSubshellStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	return pipeline.Skip, nil
 }
 
-// templateRe matches {{vault:...}} and {{gcp:...}} patterns.
-var templateRe = regexp.MustCompile(`\{\{(?:vault|gcp):[^}]+\}\}`)
+// templateRe matches {{vault:...}} and {{gcp:...}} patterns, including partial ones like {{vault:}}.
+var templateRe = regexp.MustCompile(`\{\{(?:vault|gcp):[^}]*\}\}`)
 
-// hasTemplateStage detects secret template placeholders.
+// hasTemplateStage detects secret template placeholders and parses them.
+// Stores parsed []secrets.TemplateRef in ctx.Bag["template_refs"].
 type hasTemplateStage struct{ negate bool }
 
 func (s *hasTemplateStage) Name() string             { return "has-template" }
 func (s *hasTemplateStage) Type() pipeline.StageType { return pipeline.ClassifierType }
 func (s *hasTemplateStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	cmd := ctx.Command()
-	matches := templateRe.FindAllString(cmd, -1)
-	found := len(matches) > 0
+	refs, err := secrets.ParseTemplates(cmd)
+	if err != nil {
+		// Malformed template — let it through for exec to report the error
+		return pipeline.Skip, nil
+	}
+	found := len(refs) > 0
 	ctx.Bag["has_template"] = found
 	if found {
-		ctx.Bag["templates"] = matches
+		ctx.Bag["template_refs"] = refs
 	}
 	matched := found
 	if s.negate {
@@ -249,6 +262,42 @@ func (s *hasTemplateStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	return pipeline.Skip, nil
 }
 
+// templateLeaksValueStage detects when a fetch-mode secret template would leak to stdout.
+// Uses a whitelist approach: only commands matching allowedPrefixes may consume secrets.
+type templateLeaksValueStage struct {
+	allowedPrefixes []string
+}
+
+func (s *templateLeaksValueStage) Name() string             { return "template-leaks-value" }
+func (s *templateLeaksValueStage) Type() pipeline.StageType { return pipeline.ClassifierType }
+func (s *templateLeaksValueStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	refs, ok := ctx.Bag["template_refs"].([]secrets.TemplateRef)
+	if !ok || len(refs) == 0 {
+		return pipeline.Skip, nil
+	}
+
+	hasFetch := false
+	for _, ref := range refs {
+		if ref.Mode == secrets.ModeFetch {
+			hasFetch = true
+			break
+		}
+	}
+	if !hasFetch {
+		return pipeline.Skip, nil
+	}
+
+	cmd := ctx.Command()
+	for _, prefix := range s.allowedPrefixes {
+		if strings.HasPrefix(cmd, prefix) {
+			return pipeline.Skip, nil
+		}
+	}
+
+	// Not a known consumer — assume it leaks
+	return pipeline.Continue, nil
+}
+
 // detectFormatStage classifies the tool output format.
 type detectFormatStage struct{}
 
@@ -258,14 +307,14 @@ func (s *detectFormatStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRe
 	out := ctx.ToolOutput
 	trimmed := strings.TrimSpace(out)
 
+	// Order matters: most specific checks first, cheapest last.
 	switch {
-	case strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "["):
+	case isJSON(trimmed):
 		ctx.Bag["format"] = "json"
-	case strings.HasPrefix(trimmed, "---"):
-		ctx.Bag["format"] = "yaml"
-	case strings.Contains(out, "Traceback") || strings.Contains(out, "Exception") ||
-		strings.Contains(out, "panic:") || strings.Contains(out, "FATAL"):
+	case isStacktrace(out):
 		ctx.Bag["format"] = "stacktrace"
+	case isYAML(trimmed):
+		ctx.Bag["format"] = "yaml"
 	case isCSV(out):
 		ctx.Bag["format"] = "csv"
 	case isTable(out):
@@ -276,40 +325,231 @@ func (s *detectFormatStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRe
 	return pipeline.Continue, nil
 }
 
-// multiSpaceRe detects multiple consecutive spaces (table indicator).
-var multiSpaceRe = regexp.MustCompile(`\S {2,}\S`)
-
-// isTable returns true if lines have aligned columns (multiple spaces between words).
-func isTable(out string) bool {
-	lines := nonEmptyLines(out)
-	if len(lines) < 2 {
+// isJSON validates that the output actually parses as JSON, not just starts with { or [.
+func isJSON(trimmed string) bool {
+	if len(trimmed) == 0 {
 		return false
 	}
-	count := 0
-	for _, line := range lines {
-		if multiSpaceRe.MatchString(line) {
-			count++
-		}
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return false
 	}
-	return count >= len(lines)/2+1
+	var js json.RawMessage
+	return json.Unmarshal([]byte(trimmed), &js) == nil
 }
 
-// isCSV returns true if the output looks like comma-separated values with consistent column count.
-func isCSV(out string) bool {
-	lines := nonEmptyLines(out)
-	if len(lines) < 2 {
+// isYAML tries to unmarshal as YAML and checks the result is a map or slice.
+// Plain strings and scalars are valid YAML but not what we mean by "YAML format".
+// Skips inputs starting with { or [ to avoid claiming failed-JSON as YAML.
+func isYAML(trimmed string) bool {
+	if len(trimmed) == 0 {
 		return false
 	}
-	cols := strings.Count(lines[0], ",")
-	if cols == 0 {
+	// If it looks like it was trying to be JSON, don't claim it as YAML
+	if trimmed[0] == '{' || trimmed[0] == '[' {
 		return false
 	}
-	for _, line := range lines[1:] {
-		if strings.Count(line, ",") != cols {
-			return false
+	var parsed any
+	if err := yaml.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return false
+	}
+	switch parsed.(type) {
+	case map[string]any, []any:
+		return true
+	default:
+		return false
+	}
+}
+
+// stacktracePatterns are line-level patterns that indicate a stack trace or crash.
+// Each must appear at the start of a line or as a standalone marker.
+var stacktracePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?m)^Traceback \(most recent call`),  // Python
+	regexp.MustCompile(`(?m)^\s+at .+\(.+:\d+\)`),           // Java/JS stack frames
+	regexp.MustCompile(`(?m)^goroutine \d+ \[`),              // Go goroutine dump
+	regexp.MustCompile(`(?m)^panic:`),                        // Go panic
+	regexp.MustCompile(`(?m)^FATAL[:\s]`),                    // Generic fatal
+	regexp.MustCompile(`(?m)^\s+File ".+", line \d+`),        // Python stack frames
+	regexp.MustCompile(`(?m)^\w+Error:`),                     // Python/JS error types (ValueError:, TypeError:, etc.)
+	regexp.MustCompile(`(?m)^\w+Exception:`),                 // Java exception types
+}
+
+// isStacktrace checks for structured error/crash patterns, not just keyword presence.
+func isStacktrace(out string) bool {
+	matches := 0
+	for _, pat := range stacktracePatterns {
+		if pat.MatchString(out) {
+			matches++
 		}
 	}
-	return true
+	// Require at least 2 matching patterns to avoid false positives
+	// (e.g. a single line mentioning "FATAL" in a log isn't a stacktrace)
+	return matches >= 2
+}
+
+// isTable checks for consistent column alignment across lines.
+// Handles both space-aligned and tab-separated tables.
+func isTable(out string) bool {
+	lines := nonEmptyLines(out)
+	if len(lines) < 3 {
+		return false
+	}
+
+	// Try tab-separated first (cheaper check, unambiguous)
+	if isTabTable(lines) {
+		return true
+	}
+
+	return isSpaceAlignedTable(lines)
+}
+
+// isTabTable detects tab-separated tables: consistent tab count across lines.
+func isTabTable(lines []string) bool {
+	headerTabs := strings.Count(lines[0], "\t")
+	if headerTabs == 0 {
+		return false
+	}
+
+	matching := 0
+	for _, line := range lines[1:] {
+		if strings.Count(line, "\t") == headerTabs {
+			matching++
+		}
+	}
+	return matching >= (len(lines)-1)*4/5
+}
+
+// isSpaceAlignedTable detects tables where columns are separated by 2+ spaces
+// and column boundaries are consistently aligned across lines.
+func isSpaceAlignedTable(lines []string) bool {
+	// Normalize: expand tabs to spaces (8-width) for mixed tab/space tables
+	normalized := make([]string, len(lines))
+	for i, line := range lines {
+		normalized[i] = expandTabs(line, 8)
+	}
+
+	headerGaps := findGapPositions(normalized[0])
+	if len(headerGaps) < 1 {
+		return false
+	}
+
+	// Check alignment against header
+	const tolerance = 3
+	aligned := 0
+	for _, line := range normalized[1:] {
+		gaps := findGapPositions(line)
+		if gapsAlign(headerGaps, gaps, tolerance) {
+			aligned++
+		}
+	}
+
+	// At least 70% of data lines must align
+	return aligned >= (len(lines)-1)*7/10
+}
+
+// expandTabs replaces tab characters with spaces to the next tab stop.
+func expandTabs(line string, tabWidth int) string {
+	var sb strings.Builder
+	col := 0
+	for i := 0; i < len(line); i++ {
+		if line[i] == '\t' {
+			spaces := tabWidth - (col % tabWidth)
+			for j := 0; j < spaces; j++ {
+				sb.WriteByte(' ')
+			}
+			col += spaces
+		} else {
+			sb.WriteByte(line[i])
+			col++
+		}
+	}
+	return sb.String()
+}
+
+// findGapPositions returns positions where column-separating whitespace gaps begin.
+// A gap is 2+ consecutive spaces preceded by a non-space character.
+func findGapPositions(line string) []int {
+	var positions []int
+	i := 0
+	for i < len(line) {
+		if line[i] == ' ' && i > 0 && line[i-1] != ' ' {
+			// Count consecutive spaces
+			start := i
+			for i < len(line) && line[i] == ' ' {
+				i++
+			}
+			if i-start >= 2 && i < len(line) {
+				// Record the end of the gap (where the next column starts)
+				// This is more stable than gap start when data widths vary
+				positions = append(positions, i)
+			}
+			continue
+		}
+		i++
+	}
+	return positions
+}
+
+// gapsAlign checks if data gap positions match header gap positions.
+func gapsAlign(header, data []int, tolerance int) bool {
+	if len(data) == 0 {
+		return false
+	}
+	// Require at least 2/3 of header gaps to have a matching data gap
+	matched := 0
+	for _, hpos := range header {
+		for _, dpos := range data {
+			diff := hpos - dpos
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff <= tolerance {
+				matched++
+				break
+			}
+		}
+	}
+	return matched*3 >= len(header)*2
+}
+
+// isCSV checks for comma-separated values with consistent structure.
+func isCSV(out string) bool {
+	lines := nonEmptyLines(out)
+	if len(lines) < 3 {
+		return false
+	}
+
+	// Count commas outside of quoted fields in each line
+	headerCols := countCSVCommas(lines[0])
+	if headerCols == 0 {
+		return false
+	}
+
+	matching := 0
+	for _, line := range lines[1:] {
+		if countCSVCommas(line) == headerCols {
+			matching++
+		}
+	}
+
+	// At least 80% of data lines should have the same column count
+	return matching >= (len(lines)-1)*4/5
+}
+
+// countCSVCommas counts commas outside of double-quoted fields.
+func countCSVCommas(line string) int {
+	count := 0
+	inQuotes := false
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '"':
+			inQuotes = !inQuotes
+		case ',':
+			if !inQuotes {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func nonEmptyLines(out string) []string {

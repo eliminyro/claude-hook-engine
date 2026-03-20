@@ -30,6 +30,25 @@
       ]
     },
     {
+      "id": "block-secret-cli",
+      "tool": "Bash",
+      "description": "Block direct secret retrieval commands",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["vault kv get ", "vault read ", "vault kv show ", "gcloud secrets versions access "] },
+        { "stage": "deny", "message": "Direct secret retrieval is blocked. Use {{vault:mount@path:field}} or {{gcp:project/secret}} templates instead." }
+      ]
+    },
+    {
+      "id": "template-leak-guard",
+      "tool": "Bash",
+      "description": "Block commands that would print secret values to stdout",
+      "pipeline": [
+        { "stage": "has-template" },
+        { "stage": "template-leaks-value", "prefixes": ["curl ", "wget ", "ansible-playbook ", "ansible ", "kubectl ", "docker ", "helm ", "ssh ", "scp ", "rsync ", "git ", "glab ", "mysql ", "psql ", "redis-cli ", "openssl "] },
+        { "stage": "deny", "message": "Secret templates must not be echoed to stdout. Use them as arguments to commands (e.g. curl -H 'Authorization: {{vault:...}}')." }
+      ]
+    },
+    {
       "id": "template-rewrite",
       "tool": "Bash",
       "description": "Wrap template-bearing commands in exec",

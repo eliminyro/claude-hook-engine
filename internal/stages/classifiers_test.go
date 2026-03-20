@@ -5,6 +5,7 @@ import (
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
+	"github.com/eliminyro/claude-hook-engine/internal/secrets"
 	"github.com/eliminyro/claude-hook-engine/internal/stages"
 )
 
@@ -145,7 +146,7 @@ func TestHasTemplate(t *testing.T) {
 	tests := []struct {
 		command     string
 		hasTemplate bool
-		templates   int
+		refCount    int
 	}{
 		{"curl -H '{{vault:ansible@common:key}}' https://api.com", true, 1},
 		{"curl -u '{{vault:ansible@common:user}}:{{vault:ansible@common:pass}}' https://api.com", true, 2},
@@ -163,9 +164,9 @@ func TestHasTemplate(t *testing.T) {
 			t.Errorf("command %q: expected has_template=%v, got %v", tc.command, tc.hasTemplate, got)
 		}
 		if tc.hasTemplate {
-			templates, _ := ctx.Bag["templates"].([]string)
-			if len(templates) != tc.templates {
-				t.Errorf("command %q: expected %d templates, got %d", tc.command, tc.templates, len(templates))
+			refs, _ := ctx.Bag["template_refs"].([]secrets.TemplateRef)
+			if len(refs) != tc.refCount {
+				t.Errorf("command %q: expected %d refs, got %d", tc.command, tc.refCount, len(refs))
 			}
 		}
 	}
@@ -176,13 +177,36 @@ func TestDetectFormat(t *testing.T) {
 		output   string
 		expected string
 	}{
+		// JSON: must actually parse
 		{`{"key": "value"}`, "json"},
 		{`[{"id": 1}, {"id": 2}]`, "json"},
-		{"---\nkey: value\n", "yaml"},
-		{"NAME   READY   STATUS\npod1   1/1     Running\n", "table"},
-		{"Traceback (most recent call last):\n  File \"test.py\"\nValueError: bad", "stacktrace"},
-		{"just some random text\n", "text"},
+		{`{not json}`, "text"},
+
+		// YAML: must unmarshal to map or slice
+		{"---\nkey: value\nother: thing\n", "yaml"},
+		{"key: value\nnested:\n  child: true\n", "yaml"},
+		{"- item1\n- item2\n- item3\n", "yaml"},
+		{"---\njust a scalar\n", "text"},
+		{"error: something went wrong\nstatus: not great\n", "yaml"},
+
+		// Table: 3+ lines with aligned column gaps
+		{"NAME   READY   STATUS\npod1   1/1     Running\npod2   1/1     Running\n", "table"},
+		// Tab-separated table
+		{"NAME\tREADY\tSTATUS\npod1\t1/1\tRunning\npod2\t1/1\tRunning\n", "table"},
+		// Indented code should not be a table
+		{"func main() {\n    fmt.Println(\"hello\")\n    return\n}\n", "text"},
+
+		// Stacktrace: needs 2+ structural patterns
+		{"Traceback (most recent call last):\n  File \"test.py\", line 42\nValueError: bad", "stacktrace"},
+		{"goroutine 1 [running]:\npanic: oh no\nmain.go:42\n", "stacktrace"},
+		{"something FATAL in a log line\n", "text"},
+
+		// CSV: 3+ lines, consistent comma count (handles quoted fields)
 		{"name,age,city\nAlice,30,NYC\nBob,25,LA\n", "csv"},
+		{"name,age,city\n\"Smith, Bob\",30,NYC\nAlice,25,LA\n", "csv"},
+
+		// Text: fallback
+		{"just some random text\n", "text"},
 	}
 
 	stage, _ := stages.Build(config.StageConfig{Stage: "detect-format"})
@@ -236,6 +260,70 @@ func TestLineCount(t *testing.T) {
 	got := ctx.Bag["lines"].(int)
 	if got != 3 {
 		t.Errorf("expected 3 lines, got %d", got)
+	}
+}
+
+func TestHasTemplatePartial(t *testing.T) {
+	tests := []struct {
+		command     string
+		hasTemplate bool
+	}{
+		{"{{vault:}}", true},
+		{"{{vault:ansible}}", true},
+		{"{{vault:ansible@common}}", true},
+		{"{{gcp:myproject}}", true},
+	}
+
+	stage, _ := stages.Build(config.StageConfig{Stage: "has-template"})
+	for _, tc := range tests {
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		stage.Run(ctx)
+		got, _ := ctx.Bag["has_template"].(bool)
+		if got != tc.hasTemplate {
+			t.Errorf("command %q: expected has_template=%v, got %v", tc.command, tc.hasTemplate, got)
+		}
+	}
+}
+
+func TestTemplateLeaksValue(t *testing.T) {
+	tests := []struct {
+		command string
+		leaks   bool
+		desc    string
+	}{
+		{"echo '{{vault:ansible@common:key}}'", true, "echo leaks fetch template"},
+		{"printf '{{vault:ansible@common:key}}'", true, "printf leaks fetch template"},
+		{"curl -H '{{vault:ansible@common:key}}' https://api.com", false, "curl consumes secret safely"},
+		{"echo '{{vault:ansible@common}}'", false, "echo with list template is safe"},
+		{"echo '{{vault:}}'", false, "echo with engine list is safe"},
+		{"echo hello", false, "no template at all"},
+		{"cat {{vault:ansible@common:key}}", true, "cat leaks fetch template"},
+		{"python -c 'print(...)' {{vault:ansible@common:key}}", true, "python script leaks"},
+		{"bash -c 'echo $1' _ {{vault:ansible@common:key}}", true, "bash subcommand leaks"},
+		{"kubectl create secret generic x --from-literal=k={{vault:ansible@common:key}}", false, "kubectl consumes safely"},
+		{"ansible-playbook --extra-vars pass={{vault:ansible@common:key}} play.yml", false, "ansible consumes safely"},
+	}
+
+	hasTemplateStage, _ := stages.Build(config.StageConfig{Stage: "has-template"})
+	leakStage, _ := stages.Build(config.StageConfig{
+		Stage:    "template-leaks-value",
+		Prefixes: []string{"curl ", "kubectl ", "ansible-playbook ", "ansible "},
+	})
+	for _, tc := range tests {
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		// Run has-template first to populate template_refs
+		hasTemplateStage.Run(ctx)
+		result, err := leakStage.Run(ctx)
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.desc, err)
+			continue
+		}
+		leaked := result == pipeline.Continue
+		if leaked != tc.leaks {
+			t.Errorf("%s (command %q): expected leaks=%v, got %v (result=%d)", tc.desc, tc.command, tc.leaks, leaked, result)
+		}
 	}
 }
 

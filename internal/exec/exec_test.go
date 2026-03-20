@@ -7,7 +7,7 @@ import (
 )
 
 func TestExecPrepareNoTemplates(t *testing.T) {
-	shell, cmd, err := exec.Prepare([]string{"--", "echo", "hello"})
+	shell, cmd, listOut, err := exec.Prepare([]string{"--", "echo", "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,24 +17,27 @@ func TestExecPrepareNoTemplates(t *testing.T) {
 	if cmd != "echo hello" {
 		t.Errorf("expected 'echo hello', got %q", cmd)
 	}
+	if listOut != "" {
+		t.Errorf("expected empty list output, got %q", listOut)
+	}
 }
 
 func TestExecPrepareMissingDashDash(t *testing.T) {
-	_, _, err := exec.Prepare([]string{"echo", "hello"})
+	_, _, _, err := exec.Prepare([]string{"echo", "hello"})
 	if err == nil {
 		t.Error("expected error without -- separator")
 	}
 }
 
 func TestExecPrepareNoCommandAfterSeparator(t *testing.T) {
-	_, _, err := exec.Prepare([]string{"--"})
+	_, _, _, err := exec.Prepare([]string{"--"})
 	if err == nil {
 		t.Error("expected error when no command after --")
 	}
 }
 
 func TestExecPrepareWithPrefixArgs(t *testing.T) {
-	shell, cmd, err := exec.Prepare([]string{"some", "prefix", "--", "ls", "-la"})
+	shell, cmd, _, err := exec.Prepare([]string{"some", "prefix", "--", "ls", "-la"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +50,7 @@ func TestExecPrepareWithPrefixArgs(t *testing.T) {
 }
 
 func TestExecPrepareSingleCommand(t *testing.T) {
-	_, cmd, err := exec.Prepare([]string{"--", "whoami"})
+	_, cmd, _, err := exec.Prepare([]string{"--", "whoami"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +60,7 @@ func TestExecPrepareSingleCommand(t *testing.T) {
 }
 
 func TestExecPrepareCommandWithSpaces(t *testing.T) {
-	_, cmd, err := exec.Prepare([]string{"--", "echo", "hello", "world"})
+	_, cmd, _, err := exec.Prepare([]string{"--", "echo", "hello", "world"})
 	if err != nil {
 		t.Fatal(err)
 	}
