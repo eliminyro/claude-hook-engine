@@ -31,7 +31,7 @@ func HandlePost(r io.Reader, rulesPath string) (string, error) {
 
 	cfg, err := config.Load(rulesPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("post: %w", err)
 	}
 	if cfg.UnsupportedVersion {
 		return "", nil

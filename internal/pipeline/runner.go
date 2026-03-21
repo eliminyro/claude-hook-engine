@@ -1,5 +1,10 @@
 package pipeline
 
+import (
+	"fmt"
+	"os"
+)
+
 // RuleExec is a compiled rule ready for execution.
 type RuleExec struct {
 	ID       string
@@ -12,7 +17,9 @@ type RuleExec struct {
 // For Bash tools, normalize-command runs once before rule matching (implicit, per spec).
 func RunPipeline(ctx *PipelineContext, rules []RuleExec, normalizer Stage) bool {
 	if ctx.ToolName == "Bash" && normalizer != nil {
-		normalizer.Run(ctx)
+		if _, err := normalizer.Run(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "hook: normalizer error: %v\n", err)
+		}
 	}
 
 	for _, rule := range rules {
@@ -27,11 +34,11 @@ func RunPipeline(ctx *PipelineContext, rules []RuleExec, normalizer Stage) bool 
 }
 
 func runRule(ctx *PipelineContext, rule RuleExec) bool {
-	// Set category so transformer stages can pick up per-category truncation config.
 	ctx.Category = rule.Category
 	for _, stage := range rule.Stages {
 		result, err := stage.Run(ctx)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "hook: rule %q stage %q error: %v\n", rule.ID, stage.Name(), err)
 			return false
 		}
 		switch result {

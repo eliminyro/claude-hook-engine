@@ -2,6 +2,7 @@ package stages
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -150,6 +151,7 @@ func (s *allPartsAllowedStage) Run(ctx *pipeline.PipelineContext) (pipeline.Stag
 	}
 	f, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "hook: shell parse error: %v\n", err)
 		return pipeline.Skip, nil
 	}
 

@@ -207,11 +207,17 @@ func parseGCPRef(raw, rest string) (TemplateRef, error) {
 }
 
 // Substitute replaces each Raw template string in input with its corresponding value.
+// Uses single-pass regex replacement to avoid O(n*m) string allocations.
 func Substitute(input string, values map[string]string) string {
-	for raw, val := range values {
-		input = strings.ReplaceAll(input, raw, val)
+	if len(values) == 0 {
+		return input
 	}
-	return input
+	return templateRe.ReplaceAllStringFunc(input, func(match string) string {
+		if val, ok := values[match]; ok {
+			return val
+		}
+		return match
+	})
 }
 
 // jsonMarshal is a helper to marshal a value to JSON string.

@@ -1,11 +1,13 @@
 package secrets
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 // GCPProvider fetches secrets from GCP Secret Manager using gcloud CLI.
@@ -25,9 +27,11 @@ func (p *GCPProvider) SetCmdRunner(runner func(name string, args ...string) ([]b
 	p.cmdRunner = runner
 }
 
-// defaultCmdRunner executes a command and returns its combined output.
+// defaultCmdRunner executes a command with a 30s timeout and returns its output.
 func defaultCmdRunner(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
 }
 
 // Fetch retrieves a secret from GCP Secret Manager using gcloud.

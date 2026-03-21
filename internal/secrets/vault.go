@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 )
 
 // VaultProvider fetches secrets from HashiCorp Vault KV v2.
@@ -21,7 +22,7 @@ func NewVaultProvider(addr, token string) *VaultProvider {
 	return &VaultProvider{
 		addr:   addr,
 		token:  token,
-		client: &http.Client{},
+		client: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -157,13 +158,13 @@ func (p *VaultProvider) ListFields(mount, path string) ([]string, error) {
 func (p *VaultProvider) doRequest(method, url string) ([]byte, error) {
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating request: %w", err)
 	}
 	req.Header.Set("X-Vault-Token", p.token)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("executing request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -171,7 +172,11 @@ func (p *VaultProvider) doRequest(method, url string) ([]byte, error) {
 		return nil, fmt.Errorf("unexpected status %d for %s", resp.StatusCode, url)
 	}
 
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+	return body, nil
 }
 
 // parseKeyList parses a Vault LIST response with keys array.

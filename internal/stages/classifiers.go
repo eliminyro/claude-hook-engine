@@ -2,6 +2,8 @@ package stages
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
@@ -244,7 +246,7 @@ func (s *hasTemplateStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	cmd := ctx.Command()
 	refs, err := secrets.ParseTemplates(cmd)
 	if err != nil {
-		// Malformed template — let it through for exec to report the error
+		fmt.Fprintf(os.Stderr, "hook: malformed template: %v\n", err)
 		return pipeline.Skip, nil
 	}
 	found := len(refs) > 0
