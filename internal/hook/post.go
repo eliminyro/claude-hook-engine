@@ -77,6 +77,8 @@ func HandlePost(r io.Reader, rulesPath string) (string, error) {
 	}
 
 	defaults := cfg.Defaults
+	detection := cfg.Detection
+	execCfg := cfg.Exec
 	ctx := &pipeline.PipelineContext{
 		Event:      "post",
 		ToolName:   inp.ToolName,
@@ -84,6 +86,8 @@ func HandlePost(r io.Reader, rulesPath string) (string, error) {
 		ToolOutput: toolOutput,
 		Bag:        make(map[string]any),
 		Defaults:   &defaults,
+		Detection:  &detection,
+		Exec:       &execCfg,
 		Result:     &pipeline.HookResult{},
 	}
 

@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/exec"
 	"github.com/eliminyro/claude-hook-engine/internal/hook"
+	"github.com/eliminyro/claude-hook-engine/internal/secrets"
 )
 
 func main() {
@@ -37,12 +39,14 @@ func main() {
 	}
 }
 
+// rulesPath returns the base path for rules config (without extension).
+// config.Load will try .json, .yaml, .yml automatically.
 func rulesPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".claude", "hooks", "rules.json")
+	return filepath.Join(home, ".claude", "hooks", "rules")
 }
 
 func runPre() error {
@@ -68,5 +72,18 @@ func runPost() error {
 }
 
 func runExec(args []string) error {
+	// Load config for provider settings (best-effort — defaults work without config)
+	cfg, err := config.Load(rulesPath())
+	if err == nil && len(cfg.Providers) > 0 {
+		providerConfigs := make(map[string]map[string]any, len(cfg.Providers))
+		names := make([]string, 0, len(cfg.Providers))
+		for name, pc := range cfg.Providers {
+			providerConfigs[name] = pc.Config
+			names = append(names, name)
+		}
+		exec.ProviderConfigs = providerConfigs
+		secrets.SetProviderNames(names)
+	}
+
 	return exec.Run(args)
 }

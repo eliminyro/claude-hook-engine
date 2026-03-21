@@ -206,7 +206,8 @@ type extractErrorStage struct{}
 func (s *extractErrorStage) Name() string             { return "extract-error" }
 func (s *extractErrorStage) Type() pipeline.StageType { return pipeline.TransformerType }
 func (s *extractErrorStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
-	result := extractErrors(ctx.ToolOutput)
+	det := detectionConfig(ctx)
+	result := extractErrors(ctx.ToolOutput, det.ErrorPatterns, det.ErrorContextLines)
 	if result == "" {
 		return pipeline.Skip, nil
 	}
@@ -214,23 +215,14 @@ func (s *extractErrorStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRe
 	return pipeline.Done, nil
 }
 
-var errorPatterns = []string{
-	"error", "Error", "ERROR",
-	"exception", "Exception",
-	"FATAL",
-	"panic:",
-	"fail", "FAIL",
-}
-
-// extractErrors finds lines matching error patterns with 2 lines of context.
-func extractErrors(input string) string {
+// extractErrors finds lines matching error patterns with context lines.
+func extractErrors(input string, patterns []string, contextLines int) string {
 	lines := splitLines(input)
 
-	// Mark which lines match
 	matched := make([]bool, len(lines))
 	found := false
 	for i, line := range lines {
-		for _, pat := range errorPatterns {
+		for _, pat := range patterns {
 			if strings.Contains(line, pat) {
 				matched[i] = true
 				found = true
@@ -243,11 +235,10 @@ func extractErrors(input string) string {
 		return ""
 	}
 
-	// Expand context: mark lines within 2 of each matched line
 	include := make([]bool, len(lines))
 	for i, m := range matched {
 		if m {
-			for j := i - 2; j <= i+2; j++ {
+			for j := i - contextLines; j <= i+contextLines; j++ {
 				if j >= 0 && j < len(lines) {
 					include[j] = true
 				}
@@ -301,7 +292,8 @@ func (s *truncateSmartStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageR
 	case "table":
 		truncated = summarizeTable(ctx.ToolOutput, cfg.Head)
 	case "stacktrace":
-		truncated = extractErrors(ctx.ToolOutput)
+		det := detectionConfig(ctx)
+		truncated = extractErrors(ctx.ToolOutput, det.ErrorPatterns, det.ErrorContextLines)
 		if truncated == "" {
 			// Fall back to head-tail if no errors found
 			truncated = applyHeadTail(splitLines(ctx.ToolOutput), cfg)

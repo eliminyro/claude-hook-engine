@@ -7,6 +7,7 @@ import (
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
+	"github.com/eliminyro/claude-hook-engine/internal/secrets"
 	"github.com/eliminyro/claude-hook-engine/internal/stages"
 )
 
@@ -59,13 +60,26 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 		return "", fmt.Errorf("building normalizer: %w", err)
 	}
 
+	// Register provider names for dynamic template regex
+	if len(cfg.Providers) > 0 {
+		names := make([]string, 0, len(cfg.Providers))
+		for name := range cfg.Providers {
+			names = append(names, name)
+		}
+		secrets.SetProviderNames(names)
+	}
+
 	defaults := cfg.Defaults
+	detection := cfg.Detection
+	execCfg := cfg.Exec
 	ctx := &pipeline.PipelineContext{
 		Event:     "pre",
 		ToolName:  inp.ToolName,
 		ToolInput: inp.ToolInput,
 		Bag:       make(map[string]any),
 		Defaults:  &defaults,
+		Detection: &detection,
+		Exec:      &execCfg,
 		Result:    &pipeline.HookResult{},
 	}
 

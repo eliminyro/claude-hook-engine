@@ -127,11 +127,15 @@ func (s *rewriteExecStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	if !hasTemplate {
 		return pipeline.Skip, nil
 	}
+	prefix := pipeline.DefaultExec().RewritePrefix
+	if ctx.Exec != nil && ctx.Exec.RewritePrefix != "" {
+		prefix = ctx.Exec.RewritePrefix
+	}
 	rawCmd, _ := ctx.ToolInput["command"].(string)
 	ctx.Result.PermissionDecision = "allow"
 	ctx.Result.SystemMessage = "Template rewritten to exec"
 	ctx.Result.UpdatedInput = map[string]any{
-		"command": "claude-hook-engine exec -- " + rawCmd,
+		"command": prefix + rawCmd,
 	}
 	return pipeline.Done, nil
 }

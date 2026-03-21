@@ -11,6 +11,10 @@ import (
 	"github.com/eliminyro/claude-hook-engine/internal/secrets"
 )
 
+// ProviderConfigs maps provider names to their config maps.
+// Set by the caller (cmd/main.go) before calling Run/Prepare.
+var ProviderConfigs map[string]map[string]any
+
 // parseArgs finds the "--" separator and returns the command string after it.
 func parseArgs(args []string) (string, error) {
 	sepIdx := -1
@@ -60,8 +64,18 @@ func Prepare(args []string) (shellPath string, resolvedCmd string, listOutput st
 	// Fetch secrets in parallel
 	values := make(map[string]string)
 	if len(refs) > 0 {
-		vaultProvider := buildVaultProvider()
-		gcpProvider := secrets.NewGCPProvider()
+		// Build providers for each unique provider name
+		providers := map[string]secrets.Provider{}
+		for _, ref := range refs {
+			if _, ok := providers[ref.Provider]; ok {
+				continue
+			}
+			p, buildErr := buildProvider(ref.Provider)
+			if buildErr != nil {
+				return "", "", "", buildErr
+			}
+			providers[ref.Provider] = p
+		}
 
 		var mu sync.Mutex
 		var wg sync.WaitGroup
@@ -72,30 +86,12 @@ func Prepare(args []string) (shellPath string, resolvedCmd string, listOutput st
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				var val string
-				var fetchErr error
-
-				switch ref.Provider {
-				case "vault":
-					if vaultProvider == nil {
-						fetchErr = fmt.Errorf("vault: VAULT_ADDR and VAULT_TOKEN (or ~/.vault-token) required")
-					} else {
-						fetchErr = requireField(ref)
-						if fetchErr == nil {
-							val, fetchErr = vaultProvider.Fetch(ref)
-						}
-					}
-				case "gcp":
-					val, fetchErr = gcpProvider.Fetch(ref)
-				default:
-					fetchErr = fmt.Errorf("unknown provider: %s", ref.Provider)
-				}
-
+				p := providers[ref.Provider]
+				val, fetchErr := p.Fetch(ref)
 				if fetchErr != nil {
 					errCh <- fetchErr
 					return
 				}
-
 				mu.Lock()
 				values[ref.Raw] = val
 				mu.Unlock()
@@ -121,50 +117,19 @@ func Prepare(args []string) (shellPath string, resolvedCmd string, listOutput st
 	return shellPath, resolvedCmd, "", nil
 }
 
-// requireField ensures a vault fetch template has a field specified.
-func requireField(ref secrets.TemplateRef) error {
-	if ref.Provider == "vault" && ref.Field == "" {
-		return fmt.Errorf("vault: field required in %s — use {{vault:%s@%s:<field>}}", ref.Raw, ref.Mount, ref.Path)
-	}
-	return nil
-}
-
-// handleList resolves a list-mode template and returns formatted output.
+// handleList resolves a list-mode template using the Lister interface.
 func handleList(ref secrets.TemplateRef) (string, error) {
-	switch ref.Provider {
-	case "vault":
-		return handleVaultList(ref)
-	case "gcp":
-		return handleGCPList(ref)
-	default:
-		return "", fmt.Errorf("unknown provider: %s", ref.Provider)
-	}
-}
-
-func handleVaultList(ref secrets.TemplateRef) (string, error) {
-	vaultProvider := buildVaultProvider()
-	if vaultProvider == nil {
-		return "", fmt.Errorf("vault: VAULT_ADDR and VAULT_TOKEN (or ~/.vault-token) required")
+	p, err := buildProvider(ref.Provider)
+	if err != nil {
+		return "", err
 	}
 
-	var items []string
-	var header string
-	var err error
-
-	switch ref.Level {
-	case secrets.LevelEngines:
-		header = "KV engines:"
-		items, err = vaultProvider.ListEngines()
-	case secrets.LevelPaths:
-		header = fmt.Sprintf("Paths in %s:", ref.Mount)
-		items, err = vaultProvider.ListPaths(ref.Mount)
-	case secrets.LevelFields:
-		header = fmt.Sprintf("Fields at %s@%s:", ref.Mount, ref.Path)
-		items, err = vaultProvider.ListFields(ref.Mount, ref.Path)
-	default:
-		return "", fmt.Errorf("vault: unknown list level: %s", ref.Level)
+	lister, ok := p.(secrets.Lister)
+	if !ok {
+		return "", fmt.Errorf("%s: provider does not support listing", ref.Provider)
 	}
 
+	header, items, err := lister.List(ref)
 	if err != nil {
 		return "", err
 	}
@@ -172,16 +137,15 @@ func handleVaultList(ref secrets.TemplateRef) (string, error) {
 	return formatList(header, items), nil
 }
 
-func handleGCPList(ref secrets.TemplateRef) (string, error) {
-	gcpProvider := secrets.NewGCPProvider()
-
-	header := fmt.Sprintf("Secrets in %s:", ref.Project)
-	items, err := gcpProvider.ListSecrets(ref.Project)
-	if err != nil {
-		return "", err
+// buildProvider creates a provider from the registry with config.
+func buildProvider(name string) (secrets.Provider, error) {
+	cfg := map[string]any{}
+	if ProviderConfigs != nil {
+		if c, ok := ProviderConfigs[name]; ok {
+			cfg = c
+		}
 	}
-
-	return formatList(header, items), nil
+	return secrets.BuildProvider(name, cfg)
 }
 
 func formatList(header string, items []string) string {
@@ -211,28 +175,4 @@ func Run(args []string) error {
 	}
 
 	return syscall.Exec(shellPath, []string{"sh", "-c", resolvedCmd}, os.Environ())
-}
-
-// buildVaultProvider creates a VaultProvider from environment variables or ~/.vault-token.
-// Returns nil if no credentials are available.
-func buildVaultProvider() *secrets.VaultProvider {
-	addr := os.Getenv("VAULT_ADDR")
-	token := os.Getenv("VAULT_TOKEN")
-
-	if token == "" {
-		// Try ~/.vault-token
-		home, err := os.UserHomeDir()
-		if err == nil {
-			data, err := os.ReadFile(home + "/.vault-token")
-			if err == nil {
-				token = strings.TrimSpace(string(data))
-			}
-		}
-	}
-
-	if addr == "" || token == "" {
-		return nil
-	}
-
-	return secrets.NewVaultProvider(addr, token)
 }

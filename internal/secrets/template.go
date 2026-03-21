@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // TemplateMode indicates whether a template should fetch a value or list available items.
@@ -26,7 +27,7 @@ const (
 
 // TemplateRef represents a parsed secret template reference.
 type TemplateRef struct {
-	Provider string // "vault" or "gcp"
+	Provider string // provider name (e.g., "vault", "gcp", "env")
 	Raw      string // Original {{...}} string
 	Mode     TemplateMode
 	Level    ListLevel // only set when Mode == ModeList
@@ -40,13 +41,23 @@ type TemplateRef struct {
 	Project string // e.g., "myproject"
 	Secret  string // e.g., "secret-name"
 	Version string // e.g., "v2" (optional — empty means "latest")
+
+	// Generic (for custom providers)
+	Params map[string]string
 }
 
-var templateRe = regexp.MustCompile(`\{\{((?:vault|gcp):[^}]*)\}\}`)
+var (
+	templateRe = regexp.MustCompile(`\{\{((?:vault|gcp):[^}]*)\}\}`)
+	templateMu sync.RWMutex
+)
 
-// ParseTemplates finds all {{vault:...}} and {{gcp:...}} patterns in input and parses them.
+// ParseTemplates finds all {{provider:...}} patterns in input and parses them.
 func ParseTemplates(input string) ([]TemplateRef, error) {
-	matches := templateRe.FindAllStringSubmatch(input, -1)
+	templateMu.RLock()
+	re := templateRe
+	templateMu.RUnlock()
+
+	matches := re.FindAllStringSubmatch(input, -1)
 	refs := make([]TemplateRef, 0, len(matches))
 
 	for _, m := range matches {
@@ -71,14 +82,12 @@ func parseRef(raw, inner string) (TemplateRef, error) {
 	provider := inner[:colonIdx]
 	rest := inner[colonIdx+1:]
 
-	switch provider {
-	case "vault":
-		return parseVaultRef(raw, rest)
-	case "gcp":
-		return parseGCPRef(raw, rest)
-	default:
+	// Look up registered parser
+	parser, ok := GetRefParser(provider)
+	if !ok {
 		return TemplateRef{}, fmt.Errorf("unknown provider %q in template %q", provider, raw)
 	}
+	return parser(raw, rest)
 }
 
 // parseVaultRef parses vault templates at varying levels of specificity:
@@ -212,7 +221,10 @@ func Substitute(input string, values map[string]string) string {
 	if len(values) == 0 {
 		return input
 	}
-	return templateRe.ReplaceAllStringFunc(input, func(match string) string {
+	templateMu.RLock()
+	re := templateRe
+	templateMu.RUnlock()
+	return re.ReplaceAllStringFunc(input, func(match string) string {
 		if val, ok := values[match]; ok {
 			return val
 		}

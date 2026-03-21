@@ -233,9 +233,6 @@ func (s *hasSubshellStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	return pipeline.Skip, nil
 }
 
-// templateRe matches {{vault:...}} and {{gcp:...}} patterns, including partial ones like {{vault:}}.
-var templateRe = regexp.MustCompile(`\{\{(?:vault|gcp):[^}]*\}\}`)
-
 // hasTemplateStage detects secret template placeholders and parses them.
 // Stores parsed []secrets.TemplateRef in ctx.Bag["template_refs"].
 type hasTemplateStage struct{ negate bool }
@@ -308,23 +305,32 @@ func (s *detectFormatStage) Type() pipeline.StageType { return pipeline.Classifi
 func (s *detectFormatStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	out := ctx.ToolOutput
 	trimmed := strings.TrimSpace(out)
+	det := detectionConfig(ctx)
+	ft := det.FormatThresholds
 
-	// Order matters: most specific checks first, cheapest last.
 	switch {
 	case isJSON(trimmed):
 		ctx.Bag["format"] = "json"
-	case isStacktrace(out):
+	case isStacktrace(out, det.StacktracePatterns, det.StacktraceMinMatches):
 		ctx.Bag["format"] = "stacktrace"
 	case isYAML(trimmed):
 		ctx.Bag["format"] = "yaml"
-	case isCSV(out):
+	case isCSV(out, ft.CSVMinLines, ft.CSVMatchRatio):
 		ctx.Bag["format"] = "csv"
-	case isTable(out):
+	case isTable(out, ft.TableMinLines, ft.TableTolerance, ft.TableAlignmentRatio, ft.TableTabMatchRatio):
 		ctx.Bag["format"] = "table"
 	default:
 		ctx.Bag["format"] = "text"
 	}
 	return pipeline.Continue, nil
+}
+
+// detectionConfig returns the detection config from context, or defaults.
+func detectionConfig(ctx *pipeline.PipelineContext) *pipeline.DetectionConfig {
+	if ctx.Detection != nil {
+		return ctx.Detection
+	}
+	return pipeline.DefaultDetection()
 }
 
 // isJSON validates that the output actually parses as JSON, not just starts with { or [.
@@ -362,50 +368,68 @@ func isYAML(trimmed string) bool {
 	}
 }
 
-// stacktracePatterns are line-level patterns that indicate a stack trace or crash.
-// Each must appear at the start of a line or as a standalone marker.
-var stacktracePatterns = []*regexp.Regexp{
-	regexp.MustCompile(`(?m)^Traceback \(most recent call`),  // Python
-	regexp.MustCompile(`(?m)^\s+at .+\(.+:\d+\)`),           // Java/JS stack frames
-	regexp.MustCompile(`(?m)^goroutine \d+ \[`),              // Go goroutine dump
-	regexp.MustCompile(`(?m)^panic:`),                        // Go panic
-	regexp.MustCompile(`(?m)^FATAL[:\s]`),                    // Generic fatal
-	regexp.MustCompile(`(?m)^\s+File ".+", line \d+`),        // Python stack frames
-	regexp.MustCompile(`(?m)^\w+Error:`),                     // Python/JS error types (ValueError:, TypeError:, etc.)
-	regexp.MustCompile(`(?m)^\w+Exception:`),                 // Java exception types
+// compiledStacktracePatterns caches compiled regexes for the default patterns.
+var compiledStacktracePatterns []*regexp.Regexp
+
+func init() {
+	for _, p := range pipeline.DefaultDetection().StacktracePatterns {
+		compiledStacktracePatterns = append(compiledStacktracePatterns, regexp.MustCompile(p))
+	}
 }
 
 // isStacktrace checks for structured error/crash patterns, not just keyword presence.
-func isStacktrace(out string) bool {
+func isStacktrace(out string, patterns []string, minMatches int) bool {
+	// Use precompiled defaults if patterns match
+	compiled := compiledStacktracePatterns
+	defaults := pipeline.DefaultDetection().StacktracePatterns
+	if len(patterns) != len(defaults) || !stringsEqual(patterns, defaults) {
+		compiled = make([]*regexp.Regexp, 0, len(patterns))
+		for _, p := range patterns {
+			re, err := regexp.Compile(p)
+			if err != nil {
+				continue
+			}
+			compiled = append(compiled, re)
+		}
+	}
+
 	matches := 0
-	for _, pat := range stacktracePatterns {
+	for _, pat := range compiled {
 		if pat.MatchString(out) {
 			matches++
 		}
 	}
-	// Require at least 2 matching patterns to avoid false positives
-	// (e.g. a single line mentioning "FATAL" in a log isn't a stacktrace)
-	return matches >= 2
+	return matches >= minMatches
+}
+
+func stringsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // isTable checks for consistent column alignment across lines.
-// Handles both space-aligned and tab-separated tables.
-func isTable(out string) bool {
+func isTable(out string, minLines, tolerance int, alignRatio, tabRatio float64) bool {
 	lines := nonEmptyLines(out)
-	if len(lines) < 3 {
+	if len(lines) < minLines {
 		return false
 	}
 
-	// Try tab-separated first (cheaper check, unambiguous)
-	if isTabTable(lines) {
+	if isTabTable(lines, tabRatio) {
 		return true
 	}
 
-	return isSpaceAlignedTable(lines)
+	return isSpaceAlignedTable(lines, tolerance, alignRatio)
 }
 
 // isTabTable detects tab-separated tables: consistent tab count across lines.
-func isTabTable(lines []string) bool {
+func isTabTable(lines []string, matchRatio float64) bool {
 	headerTabs := strings.Count(lines[0], "\t")
 	if headerTabs == 0 {
 		return false
@@ -417,13 +441,12 @@ func isTabTable(lines []string) bool {
 			matching++
 		}
 	}
-	return matching >= (len(lines)-1)*4/5
+	return float64(matching) >= float64(len(lines)-1)*matchRatio
 }
 
 // isSpaceAlignedTable detects tables where columns are separated by 2+ spaces
 // and column boundaries are consistently aligned across lines.
-func isSpaceAlignedTable(lines []string) bool {
-	// Normalize: expand tabs to spaces (8-width) for mixed tab/space tables
+func isSpaceAlignedTable(lines []string, tolerance int, alignRatio float64) bool {
 	normalized := make([]string, len(lines))
 	for i, line := range lines {
 		normalized[i] = expandTabs(line, 8)
@@ -434,8 +457,6 @@ func isSpaceAlignedTable(lines []string) bool {
 		return false
 	}
 
-	// Check alignment against header
-	const tolerance = 3
 	aligned := 0
 	for _, line := range normalized[1:] {
 		gaps := findGapPositions(line)
@@ -444,8 +465,7 @@ func isSpaceAlignedTable(lines []string) bool {
 		}
 	}
 
-	// At least 70% of data lines must align
-	return aligned >= (len(lines)-1)*7/10
+	return float64(aligned) >= float64(len(lines)-1)*alignRatio
 }
 
 // expandTabs replaces tab characters with spaces to the next tab stop.
@@ -514,9 +534,9 @@ func gapsAlign(header, data []int, tolerance int) bool {
 }
 
 // isCSV checks for comma-separated values with consistent structure.
-func isCSV(out string) bool {
+func isCSV(out string, minLines int, matchRatio float64) bool {
 	lines := nonEmptyLines(out)
-	if len(lines) < 3 {
+	if len(lines) < minLines {
 		return false
 	}
 
@@ -533,8 +553,7 @@ func isCSV(out string) bool {
 		}
 	}
 
-	// At least 80% of data lines should have the same column count
-	return matching >= (len(lines)-1)*4/5
+	return float64(matching) >= float64(len(lines)-1)*matchRatio
 }
 
 // countCSVCommas counts commas outside of double-quoted fields.

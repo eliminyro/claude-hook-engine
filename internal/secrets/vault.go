@@ -5,10 +5,45 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
 )
+
+func init() {
+	RegisterProvider("vault", vaultFactory, parseVaultRef)
+}
+
+// vaultFactory creates a VaultProvider from a config map.
+// Config keys: addr_env, token_env, token_file, timeout.
+func vaultFactory(cfg map[string]any) (Provider, error) {
+	addrEnv := stringOr(cfg, "addr_env", "VAULT_ADDR")
+	tokenEnv := stringOr(cfg, "token_env", "VAULT_TOKEN")
+	tokenFile := stringOr(cfg, "token_file", "~/.vault-token")
+	timeout := durationOr(cfg, "timeout", 30*time.Second)
+
+	addr := os.Getenv(addrEnv)
+	token := os.Getenv(tokenEnv)
+
+	if token == "" {
+		path := expandHome(tokenFile)
+		data, err := os.ReadFile(path)
+		if err == nil {
+			token = strings.TrimSpace(string(data))
+		}
+	}
+
+	if addr == "" || token == "" {
+		return nil, fmt.Errorf("vault: %s and %s (or %s) required", addrEnv, tokenEnv, tokenFile)
+	}
+
+	return &VaultProvider{
+		addr:   addr,
+		token:  token,
+		client: &http.Client{Timeout: timeout},
+	}, nil
+}
 
 // VaultProvider fetches secrets from HashiCorp Vault KV v2.
 type VaultProvider struct {
@@ -17,13 +52,60 @@ type VaultProvider struct {
 	client *http.Client
 }
 
-// NewVaultProvider creates a new VaultProvider.
+// NewVaultProvider creates a new VaultProvider with default settings.
 func NewVaultProvider(addr, token string) *VaultProvider {
 	return &VaultProvider{
 		addr:   addr,
 		token:  token,
 		client: &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// List implements the Lister interface for Vault.
+func (p *VaultProvider) List(ref TemplateRef) (string, []string, error) {
+	switch ref.Level {
+	case LevelEngines:
+		items, err := p.ListEngines()
+		return "KV engines:", items, err
+	case LevelPaths:
+		items, err := p.ListPaths(ref.Mount)
+		return fmt.Sprintf("Paths in %s:", ref.Mount), items, err
+	case LevelFields:
+		items, err := p.ListFields(ref.Mount, ref.Path)
+		return fmt.Sprintf("Fields at %s@%s:", ref.Mount, ref.Path), items, err
+	default:
+		return "", nil, fmt.Errorf("vault: unknown list level: %s", ref.Level)
+	}
+}
+
+// stringOr extracts a string from a config map with a default.
+func stringOr(cfg map[string]any, key, fallback string) string {
+	if v, ok := cfg[key].(string); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
+// durationOr extracts a duration string from a config map with a default.
+func durationOr(cfg map[string]any, key string, fallback time.Duration) time.Duration {
+	if v, ok := cfg[key].(string); ok && v != "" {
+		d, err := time.ParseDuration(v)
+		if err == nil {
+			return d
+		}
+	}
+	return fallback
+}
+
+// expandHome replaces a leading ~ with the home directory.
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return home + path[1:]
+		}
+	}
+	return path
 }
 
 // Fetch retrieves a specific field from Vault KV v2.

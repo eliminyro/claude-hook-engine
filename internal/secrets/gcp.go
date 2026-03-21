@@ -10,15 +10,36 @@ import (
 	"time"
 )
 
+func init() {
+	RegisterProvider("gcp", gcpFactory, parseGCPRef)
+}
+
+// gcpFactory creates a GCPProvider from a config map.
+// Config keys: command, timeout.
+func gcpFactory(cfg map[string]any) (Provider, error) {
+	timeout := durationOr(cfg, "timeout", 30*time.Second)
+	command := stringOr(cfg, "command", "gcloud")
+	return &GCPProvider{
+		cmdRunner: func(name string, args ...string) ([]byte, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			return exec.CommandContext(ctx, name, args...).Output()
+		},
+		command: command,
+	}, nil
+}
+
 // GCPProvider fetches secrets from GCP Secret Manager using gcloud CLI.
 type GCPProvider struct {
 	cmdRunner func(name string, args ...string) ([]byte, error)
+	command   string
 }
 
 // NewGCPProvider creates a new GCPProvider using the default gcloud CLI runner.
 func NewGCPProvider() *GCPProvider {
 	return &GCPProvider{
 		cmdRunner: defaultCmdRunner,
+		command:   "gcloud",
 	}
 }
 
@@ -32,6 +53,12 @@ func defaultCmdRunner(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+// List implements the Lister interface for GCP.
+func (p *GCPProvider) List(ref TemplateRef) (string, []string, error) {
+	items, err := p.ListSecrets(ref.Project)
+	return fmt.Sprintf("Secrets in %s:", ref.Project), items, err
 }
 
 // Fetch retrieves a secret from GCP Secret Manager using gcloud.
@@ -49,7 +76,7 @@ func (p *GCPProvider) Fetch(ref TemplateRef) (string, error) {
 		"--format=value(payload.data)",
 	}
 
-	out, err := p.cmdRunner("gcloud", args...)
+	out, err := p.cmdRunner(p.command, args...)
 	if err != nil {
 		return "", fmt.Errorf("gcp: gcloud command failed for %s/%s: %w", ref.Project, ref.Secret, err)
 	}
@@ -81,7 +108,7 @@ func (p *GCPProvider) ListSecrets(project string) ([]string, error) {
 		"--format=value(name)",
 	}
 
-	out, err := p.cmdRunner("gcloud", args...)
+	out, err := p.cmdRunner(p.command, args...)
 	if err != nil {
 		return nil, fmt.Errorf("gcp: list secrets in %s: %w", project, err)
 	}
