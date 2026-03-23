@@ -16,6 +16,7 @@ import (
 var ProviderConfigs map[string]map[string]any
 
 // parseArgs finds the "--" separator and returns the command string after it.
+// Each arg is shell-quoted so that sh -c preserves the original arg boundaries.
 func parseArgs(args []string) (string, error) {
 	sepIdx := -1
 	for i, a := range args {
@@ -31,7 +32,31 @@ func parseArgs(args []string) (string, error) {
 	if len(cmdParts) == 0 {
 		return "", fmt.Errorf("exec: no command provided after '--'")
 	}
-	return strings.Join(cmdParts, " "), nil
+	quoted := make([]string, len(cmdParts))
+	for i, part := range cmdParts {
+		quoted[i] = shellQuote(part)
+	}
+	return strings.Join(quoted, " "), nil
+}
+
+// shellQuote wraps a string in single quotes for safe use in sh -c,
+// passing it through unchanged if it contains only safe characters.
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	safe := true
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '_' || c == '-' || c == '.' || c == '/' || c == ':' || c == '=' || c == ',' || c == '@') {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // Prepare parses args, resolves all secret templates, and returns the shell path
