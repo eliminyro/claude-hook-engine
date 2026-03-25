@@ -24,6 +24,14 @@ type Config struct {
 	Exec               pipeline.ExecConfig                `json:"exec" yaml:"exec"`
 	Pre                []Rule                             `json:"pre" yaml:"pre"`
 	Post               []Rule                             `json:"post" yaml:"post"`
+	Projects           map[string]ProjectConfig           `json:"projects" yaml:"projects"`
+}
+
+// ProjectConfig maps directory patterns to project metadata for auto-context.
+type ProjectConfig struct {
+	Paths       []string `json:"paths" yaml:"paths"`             // Directory paths (or suffixes) that identify this project
+	Memory      string   `json:"memory" yaml:"memory"`           // Memory MCP path: category/subcategory/slug
+	Description string   `json:"description" yaml:"description"` // Short description for context hint
 }
 
 type ProviderConfig struct {

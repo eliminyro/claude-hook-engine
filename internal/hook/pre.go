@@ -76,7 +76,7 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 		Event:     "pre",
 		ToolName:  inp.ToolName,
 		ToolInput: inp.ToolInput,
-		Bag:       make(map[string]any),
+		Bag:       map[string]any{"cwd": inp.CWD},
 		Defaults:  &defaults,
 		Detection: &detection,
 		Exec:      &execCfg,

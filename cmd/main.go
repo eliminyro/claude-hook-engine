@@ -33,6 +33,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+	case "session-start":
+		if err := runSessionStart(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", os.Args[1])
 		os.Exit(1)
@@ -62,6 +67,17 @@ func runPre() error {
 
 func runPost() error {
 	output, err := hook.HandlePost(os.Stdin, rulesPath())
+	if err != nil {
+		return err
+	}
+	if output != "" {
+		fmt.Print(output)
+	}
+	return nil
+}
+
+func runSessionStart() error {
+	output, err := hook.HandleSessionStart(os.Stdin, rulesPath())
 	if err != nil {
 		return err
 	}
