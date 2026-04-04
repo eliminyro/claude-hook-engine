@@ -52,6 +52,10 @@ func init() {
 		return &detectIntentStage{extraFlags: cfg.Args}, nil
 	})
 
+	register("has-command", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		return &hasCommandStage{args: cfg.Args, negate: cfg.Negate}, nil
+	})
+
 	register("line-count", func(cfg config.StageConfig) (pipeline.Stage, error) {
 		return &lineCountStage{}, nil
 	})
@@ -150,6 +154,169 @@ func (s *commandContainsStage) Run(ctx *pipeline.PipelineContext) (pipeline.Stag
 		return pipeline.Continue, nil
 	}
 	return pipeline.Skip, nil
+}
+
+// hasCommandStage extracts command verbs from a shell string and checks if any
+// match the given patterns. Handles sudo, ssh, pipes, &&, ||, ;.
+// Unlike command-contains, this only matches actual command names, not arguments or quoted text.
+type hasCommandStage struct {
+	args   []string
+	negate bool
+}
+
+func (s *hasCommandStage) Name() string             { return "has-command" }
+func (s *hasCommandStage) Type() pipeline.StageType { return pipeline.ClassifierType }
+func (s *hasCommandStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	cmd := ctx.Command()
+	verbs := extractCommandVerbs(cmd)
+	matched := false
+	for _, verb := range verbs {
+		for _, pattern := range s.args {
+			if verb == pattern || strings.HasPrefix(verb, pattern) {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			break
+		}
+	}
+	if s.negate {
+		matched = !matched
+	}
+	if matched {
+		return pipeline.Continue, nil
+	}
+	return pipeline.Skip, nil
+}
+
+// extractCommandVerbs splits a shell command on unquoted separators (|, &&, ||, ;)
+// and returns the command verb from each segment, stripping sudo/ssh prefixes.
+func extractCommandVerbs(cmd string) []string {
+	segments := splitCommandSegments(cmd)
+	var verbs []string
+	for _, seg := range segments {
+		verb := extractVerb(seg)
+		if verb != "" {
+			verbs = append(verbs, verb)
+		}
+	}
+	return verbs
+}
+
+// splitCommandSegments splits on |, &&, ||, ; outside quotes.
+func splitCommandSegments(cmd string) []string {
+	var segments []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(cmd); i++ {
+		ch := cmd[i]
+		switch {
+		case ch == '\'' && !inDouble:
+			inSingle = !inSingle
+			current.WriteByte(ch)
+		case ch == '"' && !inSingle:
+			inDouble = !inDouble
+			current.WriteByte(ch)
+		case ch == '\\' && inDouble && i+1 < len(cmd):
+			current.WriteByte(ch)
+			i++
+			current.WriteByte(cmd[i])
+		case !inSingle && !inDouble && (ch == '|' || ch == '&' || ch == ';'):
+			// Consume the separator (&&, ||, or single char)
+			if ch == '&' && i+1 < len(cmd) && cmd[i+1] == '&' {
+				i++
+			} else if ch == '|' && i+1 < len(cmd) && cmd[i+1] == '|' {
+				i++
+			}
+			seg := strings.TrimSpace(current.String())
+			if seg != "" {
+				segments = append(segments, seg)
+			}
+			current.Reset()
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	if seg := strings.TrimSpace(current.String()); seg != "" {
+		segments = append(segments, seg)
+	}
+	return segments
+}
+
+// extractVerb gets the command name from a segment, skipping sudo/ssh/env prefixes.
+func extractVerb(segment string) string {
+	s := strings.TrimSpace(segment)
+
+	// Strip leading env vars (KEY=value ...)
+	for {
+		if len(s) == 0 {
+			return ""
+		}
+		if envVarRe.MatchString(s) {
+			loc := envVarRe.FindStringIndex(s)
+			rest := s[loc[1]:]
+			if len(rest) == 0 || (rest[0] != ' ' && rest[0] != '\t') {
+				break
+			}
+			s = strings.TrimSpace(rest)
+			continue
+		}
+		break
+	}
+
+	// Get first word
+	word := firstWord(s)
+
+	// Skip through sudo, ssh, and similar wrappers
+	for word == "sudo" || word == "nohup" || word == "nice" || word == "env" || word == "time" {
+		s = strings.TrimSpace(strings.TrimPrefix(s, word))
+		// sudo may have flags like -u user
+		for len(s) > 0 && s[0] == '-' {
+			s = skipWord(s)
+			// Flag might have an argument
+			if len(s) > 0 && s[0] != '-' {
+				s = skipWord(s)
+			}
+		}
+		word = firstWord(s)
+	}
+
+	// ssh: skip "ssh [flags...] host" to get the remote command
+	if word == "ssh" || word == "sshpass" {
+		s = strings.TrimSpace(strings.TrimPrefix(s, word))
+		// Skip flags and host to find the remote command
+		for len(s) > 0 && s[0] == '-' {
+			s = skipWord(s) // flag
+			s = skipWord(s) // flag argument
+		}
+		s = skipWord(s) // host
+		word = firstWord(s)
+	}
+
+	return word
+}
+
+func firstWord(s string) string {
+	s = strings.TrimSpace(s)
+	for i, ch := range s {
+		if ch == ' ' || ch == '\t' {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+func skipWord(s string) string {
+	s = strings.TrimSpace(s)
+	for i, ch := range s {
+		if ch == ' ' || ch == '\t' {
+			return strings.TrimSpace(s[i:])
+		}
+	}
+	return ""
 }
 
 // scanQuoteAware returns whether ch appears outside of single or double quotes.

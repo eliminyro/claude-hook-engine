@@ -79,6 +79,50 @@ func TestCommandContains(t *testing.T) {
 	}
 }
 
+func TestHasCommand(t *testing.T) {
+	tests := []struct {
+		command  string
+		args     []string
+		expected pipeline.StageResult
+	}{
+		// Direct command match
+		{"shutdown -h now", []string{"shutdown", "reboot"}, pipeline.Continue},
+		{"reboot", []string{"shutdown", "reboot"}, pipeline.Continue},
+		{"dd if=/dev/zero of=/dev/sda", []string{"dd"}, pipeline.Continue},
+		// With sudo
+		{"sudo shutdown -h now", []string{"shutdown"}, pipeline.Continue},
+		{"sudo -u root reboot", []string{"reboot"}, pipeline.Continue},
+		// With ssh
+		{"ssh host shutdown -h now", []string{"shutdown"}, pipeline.Continue},
+		{"ssh -i key user@host reboot", []string{"reboot"}, pipeline.Continue},
+		// In pipeline
+		{"echo test | shutdown", []string{"shutdown"}, pipeline.Continue},
+		{"cmd1 && shutdown", []string{"shutdown"}, pipeline.Continue},
+		{"cmd1 ; reboot", []string{"reboot"}, pipeline.Continue},
+		// Should NOT match — word appears in arguments, not as command
+		{"gh pr create --body 'graceful shutdown support'", []string{"shutdown"}, pipeline.Skip},
+		{"git commit -m 'fix: reboot handling'", []string{"reboot"}, pipeline.Skip},
+		{"echo shutdown", []string{"shutdown"}, pipeline.Skip},
+		{"curl -d 'shutdown=true' https://api.com", []string{"shutdown"}, pipeline.Skip},
+		// Unrelated commands
+		{"ls -la", []string{"shutdown", "reboot"}, pipeline.Skip},
+		{"docker ps", []string{"shutdown"}, pipeline.Skip},
+	}
+
+	for _, tc := range tests {
+		stage, _ := stages.Build(config.StageConfig{Stage: "has-command", Args: tc.args})
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		result, err := stage.Run(ctx)
+		if err != nil {
+			t.Errorf("command %q: unexpected error: %v", tc.command, err)
+		}
+		if result != tc.expected {
+			t.Errorf("command %q with args %v: expected %d, got %d", tc.command, tc.args, tc.expected, result)
+		}
+	}
+}
+
 func TestHasPipe(t *testing.T) {
 	tests := []struct {
 		command string

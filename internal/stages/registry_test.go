@@ -11,7 +11,7 @@ func TestRegistryKnownStages(t *testing.T) {
 	known := []string{
 		"normalize-command", "detect-format", "detect-intent",
 		"has-pipe", "has-subshell", "has-template",
-		"command-prefix", "command-contains", "line-count",
+		"command-prefix", "command-contains", "has-command", "line-count",
 		"allow", "deny", "ask", "redirect", "redirect-if",
 		"rewrite-exec", "all-parts-allowed",
 		"head-tail", "truncate-smart", "summarize-json",
