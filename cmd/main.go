@@ -5,15 +5,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/eliminyro/claude-hook-engine/internal/config"
-	"github.com/eliminyro/claude-hook-engine/internal/exec"
 	"github.com/eliminyro/claude-hook-engine/internal/hook"
-	"github.com/eliminyro/claude-hook-engine/internal/secrets"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: claude-hook-engine <pre|post|exec> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: claude-hook-engine <pre|post|session-start> [args...]")
 		os.Exit(1)
 	}
 
@@ -25,11 +22,6 @@ func main() {
 		}
 	case "post":
 		if err := runPost(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	case "exec":
-		if err := runExec(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -85,21 +77,4 @@ func runSessionStart() error {
 		fmt.Print(output)
 	}
 	return nil
-}
-
-func runExec(args []string) error {
-	// Load config for provider settings (best-effort — defaults work without config)
-	cfg, err := config.Load(rulesPath())
-	if err == nil && len(cfg.Providers) > 0 {
-		providerConfigs := make(map[string]map[string]any, len(cfg.Providers))
-		names := make([]string, 0, len(cfg.Providers))
-		for name, pc := range cfg.Providers {
-			providerConfigs[name] = pc.Config
-			names = append(names, name)
-		}
-		exec.ProviderConfigs = providerConfigs
-		secrets.SetProviderNames(names)
-	}
-
-	return exec.Run(args)
 }

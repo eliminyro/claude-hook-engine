@@ -2,8 +2,6 @@ package stages
 
 import (
 	"encoding/json"
-	"fmt"
-	"os"
 	"regexp"
 	"strings"
 
@@ -11,7 +9,6 @@ import (
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
-	"github.com/eliminyro/claude-hook-engine/internal/secrets"
 )
 
 func init() {
@@ -400,24 +397,18 @@ func (s *hasSubshellStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	return pipeline.Skip, nil
 }
 
-// hasTemplateStage detects secret template placeholders and parses them.
-// Stores parsed []secrets.TemplateRef in ctx.Bag["template_refs"].
+// templateRe matches {{vault:...}} and {{gcp:...}} template placeholders.
+var templateRe = regexp.MustCompile(`\{\{(?:vault|gcp):[^}]+\}\}`)
+
+// hasTemplateStage detects secret template placeholders.
 type hasTemplateStage struct{ negate bool }
 
 func (s *hasTemplateStage) Name() string             { return "has-template" }
 func (s *hasTemplateStage) Type() pipeline.StageType { return pipeline.ClassifierType }
 func (s *hasTemplateStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	cmd := ctx.Command()
-	refs, err := secrets.ParseTemplates(cmd)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "hook: malformed template: %v\n", err)
-		return pipeline.Skip, nil
-	}
-	found := len(refs) > 0
+	found := templateRe.MatchString(cmd)
 	ctx.Bag["has_template"] = found
-	if found {
-		ctx.Bag["template_refs"] = refs
-	}
 	matched := found
 	if s.negate {
 		matched = !matched
@@ -428,7 +419,7 @@ func (s *hasTemplateStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	return pipeline.Skip, nil
 }
 
-// templateLeaksValueStage detects when a fetch-mode secret template would leak to stdout.
+// templateLeaksValueStage detects when a secret template would leak to stdout.
 // Uses a whitelist approach: only commands matching allowedPrefixes may consume secrets.
 type templateLeaksValueStage struct {
 	allowedPrefixes []string
@@ -437,19 +428,8 @@ type templateLeaksValueStage struct {
 func (s *templateLeaksValueStage) Name() string             { return "template-leaks-value" }
 func (s *templateLeaksValueStage) Type() pipeline.StageType { return pipeline.ClassifierType }
 func (s *templateLeaksValueStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
-	refs, ok := ctx.Bag["template_refs"].([]secrets.TemplateRef)
-	if !ok || len(refs) == 0 {
-		return pipeline.Skip, nil
-	}
-
-	hasFetch := false
-	for _, ref := range refs {
-		if ref.Mode == secrets.ModeFetch {
-			hasFetch = true
-			break
-		}
-	}
-	if !hasFetch {
+	hasTemplate, _ := ctx.Bag["has_template"].(bool)
+	if !hasTemplate {
 		return pipeline.Skip, nil
 	}
 

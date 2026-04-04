@@ -5,7 +5,6 @@ import (
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
-	"github.com/eliminyro/claude-hook-engine/internal/secrets"
 	"github.com/eliminyro/claude-hook-engine/internal/stages"
 )
 
@@ -190,12 +189,12 @@ func TestHasTemplate(t *testing.T) {
 	tests := []struct {
 		command     string
 		hasTemplate bool
-		refCount    int
 	}{
-		{"curl -H '{{vault:ansible@common:key}}' https://api.com", true, 1},
-		{"curl -u '{{vault:ansible@common:user}}:{{vault:ansible@common:pass}}' https://api.com", true, 2},
-		{"echo hello", false, 0},
-		{"echo '{{gcp:project/secret}}'", true, 1},
+		{"curl -H '{{vault:ansible@common:key}}' https://api.com", true},
+		{"curl -u '{{vault:ansible@common:user}}:{{vault:ansible@common:pass}}' https://api.com", true},
+		{"echo hello", false},
+		{"echo '{{gcp:project/secret}}'", true},
+		{"no templates here", false},
 	}
 
 	stage, _ := stages.Build(config.StageConfig{Stage: "has-template"})
@@ -206,12 +205,6 @@ func TestHasTemplate(t *testing.T) {
 		got, _ := ctx.Bag["has_template"].(bool)
 		if got != tc.hasTemplate {
 			t.Errorf("command %q: expected has_template=%v, got %v", tc.command, tc.hasTemplate, got)
-		}
-		if tc.hasTemplate {
-			refs, _ := ctx.Bag["template_refs"].([]secrets.TemplateRef)
-			if len(refs) != tc.refCount {
-				t.Errorf("command %q: expected %d refs, got %d", tc.command, tc.refCount, len(refs))
-			}
 		}
 	}
 }
@@ -312,7 +305,7 @@ func TestHasTemplatePartial(t *testing.T) {
 		command     string
 		hasTemplate bool
 	}{
-		{"{{vault:}}", true},
+		{"{{vault:}}", false},  // empty body — not a valid template
 		{"{{vault:ansible}}", true},
 		{"{{vault:ansible@common}}", true},
 		{"{{gcp:myproject}}", true},
@@ -339,8 +332,8 @@ func TestTemplateLeaksValue(t *testing.T) {
 		{"echo '{{vault:ansible@common:key}}'", true, "echo leaks fetch template"},
 		{"printf '{{vault:ansible@common:key}}'", true, "printf leaks fetch template"},
 		{"curl -H '{{vault:ansible@common:key}}' https://api.com", false, "curl consumes secret safely"},
-		{"echo '{{vault:ansible@common}}'", false, "echo with list template is safe"},
-		{"echo '{{vault:}}'", false, "echo with engine list is safe"},
+		{"echo '{{vault:ansible@common}}'", true, "echo with any template leaks"},
+		{"echo '{{vault:}}'", false, "echo with empty template body — not detected as template"},
 		{"echo hello", false, "no template at all"},
 		{"cat {{vault:ansible@common:key}}", true, "cat leaks fetch template"},
 		{"python -c 'print(...)' {{vault:ansible@common:key}}", true, "python script leaks"},

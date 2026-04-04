@@ -114,7 +114,7 @@ func TestRewriteExec(t *testing.T) {
 	if !ok {
 		t.Fatal("expected updatedInput.command to be set")
 	}
-	expected := "claude-hook-engine exec -- " + rawCmd
+	expected := "secretctl exec -- " + rawCmd
 	if cmd != expected {
 		t.Errorf("expected %q, got %q", expected, cmd)
 	}
