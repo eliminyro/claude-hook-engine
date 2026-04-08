@@ -13,7 +13,7 @@ const (
 type StageType int
 
 const (
-	ClassifierType  StageType = iota
+	ClassifierType StageType = iota
 	DeciderType
 	TransformerType
 )
@@ -27,10 +27,10 @@ type Stage interface {
 
 // PipelineContext is the shared state passed through all stages in a pipeline.
 type PipelineContext struct {
-	Event      string         // "pre" or "post"
+	Event      string // "pre" or "post"
 	ToolName   string
 	ToolInput  map[string]any
-	ToolOutput string         // post only
+	ToolOutput string // post only
 	Bag        map[string]any
 	Category   *CategoryConfig
 	Defaults   *DefaultsConfig
@@ -71,21 +71,21 @@ type TruncateConfig struct {
 
 // DetectionConfig holds configurable patterns and thresholds for format detection.
 type DetectionConfig struct {
-	StacktracePatterns  []string              `json:"stacktrace_patterns" yaml:"stacktrace_patterns"`
-	StacktraceMinMatches int                  `json:"stacktrace_min_matches" yaml:"stacktrace_min_matches"`
-	ErrorPatterns       []string              `json:"error_patterns" yaml:"error_patterns"`
-	ErrorContextLines   int                   `json:"error_context_lines" yaml:"error_context_lines"`
-	FormatThresholds    FormatThresholdsConfig `json:"format_thresholds" yaml:"format_thresholds"`
+	StacktracePatterns   []string               `json:"stacktrace_patterns" yaml:"stacktrace_patterns"`
+	StacktraceMinMatches int                    `json:"stacktrace_min_matches" yaml:"stacktrace_min_matches"`
+	ErrorPatterns        []string               `json:"error_patterns" yaml:"error_patterns"`
+	ErrorContextLines    int                    `json:"error_context_lines" yaml:"error_context_lines"`
+	FormatThresholds     FormatThresholdsConfig `json:"format_thresholds" yaml:"format_thresholds"`
 }
 
 // FormatThresholdsConfig holds numeric thresholds for format classification.
 type FormatThresholdsConfig struct {
-	TableTolerance     int     `json:"table_tolerance" yaml:"table_tolerance"`
-	TableMinLines      int     `json:"table_min_lines" yaml:"table_min_lines"`
+	TableTolerance      int     `json:"table_tolerance" yaml:"table_tolerance"`
+	TableMinLines       int     `json:"table_min_lines" yaml:"table_min_lines"`
 	TableAlignmentRatio float64 `json:"table_alignment_ratio" yaml:"table_alignment_ratio"`
-	TableTabMatchRatio float64 `json:"table_tab_match_ratio" yaml:"table_tab_match_ratio"`
-	CSVMatchRatio      float64 `json:"csv_match_ratio" yaml:"csv_match_ratio"`
-	CSVMinLines        int     `json:"csv_min_lines" yaml:"csv_min_lines"`
+	TableTabMatchRatio  float64 `json:"table_tab_match_ratio" yaml:"table_tab_match_ratio"`
+	CSVMatchRatio       float64 `json:"csv_match_ratio" yaml:"csv_match_ratio"`
+	CSVMinLines         int     `json:"csv_min_lines" yaml:"csv_min_lines"`
 }
 
 // ExecConfig holds configurable exec settings.
@@ -114,12 +114,12 @@ func DefaultDetection() *DetectionConfig {
 		},
 		ErrorContextLines: 2,
 		FormatThresholds: FormatThresholdsConfig{
-			TableTolerance:     3,
-			TableMinLines:      3,
+			TableTolerance:      3,
+			TableMinLines:       3,
 			TableAlignmentRatio: 0.7,
-			TableTabMatchRatio: 0.8,
-			CSVMatchRatio:      0.8,
-			CSVMinLines:        3,
+			TableTabMatchRatio:  0.8,
+			CSVMatchRatio:       0.8,
+			CSVMinLines:         3,
 		},
 	}
 }
@@ -139,6 +139,6 @@ type HookResult struct {
 	SystemMessage      string         `json:"systemMessage,omitempty"`
 
 	// PostToolUse fields
-	TruncatedOutput string `json:"truncatedOutput,omitempty"`
+	TruncatedOutput   string `json:"truncatedOutput,omitempty"`
 	AdditionalContext string `json:"additionalContext,omitempty"`
 }

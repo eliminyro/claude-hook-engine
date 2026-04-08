@@ -63,11 +63,11 @@ func (m *mockStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, er
 
 func TestRunnerFirstMatchWins(t *testing.T) {
 	ctx := &pipeline.PipelineContext{
-		Event:    "pre",
-		ToolName: "Bash",
+		Event:     "pre",
+		ToolName:  "Bash",
 		ToolInput: map[string]any{"command": "rm -rf /"},
-		Bag:      make(map[string]any),
-		Result:   &pipeline.HookResult{},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
 	}
 
 	rules := []pipeline.RuleExec{
@@ -104,11 +104,11 @@ func TestRunnerFirstMatchWins(t *testing.T) {
 
 func TestRunnerSkipMovesToNextRule(t *testing.T) {
 	ctx := &pipeline.PipelineContext{
-		Event:    "pre",
-		ToolName: "Bash",
+		Event:     "pre",
+		ToolName:  "Bash",
 		ToolInput: map[string]any{"command": "ls"},
-		Bag:      make(map[string]any),
-		Result:   &pipeline.HookResult{},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
 	}
 
 	rules := []pipeline.RuleExec{
@@ -140,11 +140,11 @@ func TestRunnerSkipMovesToNextRule(t *testing.T) {
 
 func TestRunnerToolMismatch(t *testing.T) {
 	ctx := &pipeline.PipelineContext{
-		Event:    "pre",
-		ToolName: "Read",
+		Event:     "pre",
+		ToolName:  "Read",
 		ToolInput: map[string]any{},
-		Bag:      make(map[string]any),
-		Result:   &pipeline.HookResult{},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
 	}
 
 	rules := []pipeline.RuleExec{
@@ -164,11 +164,11 @@ func TestRunnerToolMismatch(t *testing.T) {
 
 func TestRunnerNoMatchReturnsUnmatched(t *testing.T) {
 	ctx := &pipeline.PipelineContext{
-		Event:    "pre",
-		ToolName: "Bash",
+		Event:     "pre",
+		ToolName:  "Bash",
 		ToolInput: map[string]any{"command": "echo hi"},
-		Bag:      make(map[string]any),
-		Result:   &pipeline.HookResult{},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
 	}
 
 	matched := pipeline.RunPipeline(ctx, nil, nil)
@@ -179,11 +179,11 @@ func TestRunnerNoMatchReturnsUnmatched(t *testing.T) {
 
 func TestRunnerNormalizerRunsForBash(t *testing.T) {
 	ctx := &pipeline.PipelineContext{
-		Event:    "pre",
-		ToolName: "Bash",
+		Event:     "pre",
+		ToolName:  "Bash",
 		ToolInput: map[string]any{"command": "  ls -la"},
-		Bag:      make(map[string]any),
-		Result:   &pipeline.HookResult{},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
 	}
 
 	normalizer := &mockStage{
@@ -203,11 +203,11 @@ func TestRunnerNormalizerRunsForBash(t *testing.T) {
 
 func TestRunnerNormalizerSkippedForNonBash(t *testing.T) {
 	ctx := &pipeline.PipelineContext{
-		Event:    "post",
-		ToolName: "Read",
+		Event:     "post",
+		ToolName:  "Read",
 		ToolInput: map[string]any{},
-		Bag:      make(map[string]any),
-		Result:   &pipeline.HookResult{},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
 	}
 
 	normalizer := &mockStage{

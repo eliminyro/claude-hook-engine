@@ -10,11 +10,11 @@ import (
 
 func newCtx(command string) *pipeline.PipelineContext {
 	return &pipeline.PipelineContext{
-		Event:    "pre",
-		ToolName: "Bash",
+		Event:     "pre",
+		ToolName:  "Bash",
 		ToolInput: map[string]any{"command": command},
-		Bag:      make(map[string]any),
-		Result:   &pipeline.HookResult{},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
 	}
 }
 
@@ -305,7 +305,7 @@ func TestHasTemplatePartial(t *testing.T) {
 		command     string
 		hasTemplate bool
 	}{
-		{"{{vault:}}", false},  // empty body — not a valid template
+		{"{{vault:}}", false}, // empty body — not a valid template
 		{"{{vault:ansible}}", true},
 		{"{{vault:ansible@common}}", true},
 		{"{{gcp:myproject}}", true},
