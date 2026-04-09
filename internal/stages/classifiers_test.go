@@ -10,11 +10,11 @@ import (
 
 func newCtx(command string) *pipeline.PipelineContext {
 	return &pipeline.PipelineContext{
-		Event:    "pre",
-		ToolName: "Bash",
+		Event:     "pre",
+		ToolName:  "Bash",
 		ToolInput: map[string]any{"command": command},
-		Bag:      make(map[string]any),
-		Result:   &pipeline.HookResult{},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
 	}
 }
 
@@ -305,7 +305,7 @@ func TestHasTemplatePartial(t *testing.T) {
 		command     string
 		hasTemplate bool
 	}{
-		{"{{vault:}}", false},  // empty body — not a valid template
+		{"{{vault:}}", false}, // empty body — not a valid template
 		{"{{vault:ansible}}", true},
 		{"{{vault:ansible@common}}", true},
 		{"{{gcp:myproject}}", true},
@@ -396,5 +396,107 @@ func TestNormalizeCommand(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("input %q: expected %q, got %q", tc.input, tc.expected, got)
 		}
+	}
+}
+
+func TestCommandVerb(t *testing.T) {
+	gitFlags := map[string]string{
+		"-C":          "arg",
+		"--git-dir":   "arg",
+		"--work-tree": "arg",
+		"-c":          "arg",
+		"--no-pager":  "bool",
+		"--bare":      "bool",
+	}
+
+	tests := []struct {
+		name     string
+		command  string
+		cmd      string
+		verbs    []string
+		flags    map[string]string
+		expected pipeline.StageResult
+	}{
+		{"simple match", "git log --oneline", "git", []string{"log", "diff"}, gitFlags, pipeline.Continue},
+		{"simple no match", "git push origin", "git", []string{"log", "diff"}, gitFlags, pipeline.Skip},
+		{"flag with arg", "git -C /path log --oneline", "git", []string{"log", "diff"}, gitFlags, pipeline.Continue},
+		{"multiple flags", "git --no-pager -C /some/path diff HEAD", "git", []string{"log", "diff"}, gitFlags, pipeline.Continue},
+		{"wrong command", "docker -H tcp://host ps", "git", []string{"log", "diff"}, gitFlags, pipeline.Skip},
+		{"flag-value not confused with verb", "git -c user.name=test commit -m 'msg'", "git", []string{"commit"}, gitFlags, pipeline.Continue},
+		{"unknown flag skipped", "git --verbose log -5", "git", []string{"log"}, gitFlags, pipeline.Continue},
+		{"no verb after flags", "git --no-pager", "git", []string{"log"}, gitFlags, pipeline.Skip},
+		{"empty command", "", "git", []string{"log"}, gitFlags, pipeline.Skip},
+		{"kubectl example", "kubectl -n foo get pods", "kubectl", []string{"get", "describe"}, map[string]string{"-n": "arg", "--namespace": "arg", "--context": "arg"}, pipeline.Continue},
+		{"quoted path in flag arg", "git -C '/path with spaces' log", "git", []string{"log"}, gitFlags, pipeline.Continue},
+		{"flag=value style", "git --git-dir=/repo log", "git", []string{"log"}, gitFlags, pipeline.Continue},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stage, err := stages.Build(config.StageConfig{
+				Stage:       "command-verb",
+				Command:     tc.cmd,
+				Verb:        tc.verbs,
+				GlobalFlags: tc.flags,
+			})
+			if err != nil {
+				t.Fatalf("build error: %v", err)
+			}
+			ctx := newCtx(tc.command)
+			ctx.Bag["command"] = tc.command
+			result, err := stage.Run(ctx)
+			if err != nil {
+				t.Fatalf("run error: %v", err)
+			}
+			if result != tc.expected {
+				t.Errorf("expected %d, got %d", tc.expected, result)
+			}
+		})
+	}
+}
+
+func TestCommandVerbNegate(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{
+		Stage:       "command-verb",
+		Command:     "git",
+		Verb:        []string{"log"},
+		GlobalFlags: map[string]string{"-C": "arg"},
+		Negate:      true,
+	})
+	ctx := newCtx("git -C /path log")
+	ctx.Bag["command"] = "git -C /path log"
+	result, _ := stage.Run(ctx)
+	if result != pipeline.Skip {
+		t.Error("negated match should Skip")
+	}
+}
+
+func TestTokenizeCommand(t *testing.T) {
+	// Exported via the stage's behavior — test indirectly through command-verb
+	tests := []struct {
+		name    string
+		command string
+		verb    string
+	}{
+		{"simple", "git log", "log"},
+		{"single quotes", "git -C '/my path' log", "log"},
+		{"double quotes", "git -C \"/my path\" log", "log"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stage, _ := stages.Build(config.StageConfig{
+				Stage:       "command-verb",
+				Command:     "git",
+				Verb:        []string{tc.verb},
+				GlobalFlags: map[string]string{"-C": "arg"},
+			})
+			ctx := newCtx(tc.command)
+			ctx.Bag["command"] = tc.command
+			result, _ := stage.Run(ctx)
+			if result != pipeline.Continue {
+				t.Errorf("expected Continue for %q with verb %q", tc.command, tc.verb)
+			}
+		})
 	}
 }

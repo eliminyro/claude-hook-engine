@@ -2,6 +2,7 @@ package stages
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -55,6 +56,31 @@ func init() {
 
 	register("line-count", func(cfg config.StageConfig) (pipeline.Stage, error) {
 		return &lineCountStage{}, nil
+	})
+
+	register("command-verb", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		flags := make(map[string]flagSpec, len(cfg.GlobalFlags))
+		for flag, spec := range cfg.GlobalFlags {
+			switch spec {
+			case "bool":
+				flags[flag] = flagSpec{takesArg: false}
+			case "arg":
+				flags[flag] = flagSpec{takesArg: true}
+			default:
+				// Treat as regex pattern for the argument
+				re, err := regexp.Compile(spec)
+				if err != nil {
+					return nil, fmt.Errorf("command-verb: bad regex for flag %q: %w", flag, err)
+				}
+				flags[flag] = flagSpec{takesArg: true, argPattern: re}
+			}
+		}
+		return &commandVerbStage{
+			command: cfg.Command,
+			verbs:   cfg.Verb,
+			flags:   flags,
+			negate:  cfg.Negate,
+		}, nil
 	})
 }
 
@@ -778,4 +804,123 @@ func (s *lineCountStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResul
 	}
 	ctx.Bag["lines"] = count
 	return pipeline.Continue, nil
+}
+
+// flagSpec describes a CLI flag's argument behavior.
+type flagSpec struct {
+	takesArg   bool           // Whether the flag consumes the next token
+	argPattern *regexp.Regexp // Optional: regex the arg must match (nil = any arg)
+}
+
+// commandVerbStage extracts the subcommand verb from a CLI command,
+// skipping known global flags. This handles commands like:
+//
+//	git -C /path log --oneline  →  verb is "log"
+//	kubectl -n foo get pods     →  verb is "get"
+//
+// Global flags are defined per-rule in rules.json, keeping the engine generic.
+type commandVerbStage struct {
+	command string
+	verbs   []string
+	flags   map[string]flagSpec
+	negate  bool
+}
+
+func (s *commandVerbStage) Name() string             { return "command-verb" }
+func (s *commandVerbStage) Type() pipeline.StageType { return pipeline.ClassifierType }
+
+func (s *commandVerbStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	cmd := ctx.Command()
+	tokens := tokenizeCommand(cmd)
+
+	if len(tokens) == 0 || tokens[0] != s.command {
+		return s.result(false), nil
+	}
+
+	// Walk tokens after the command, skip global flags and their args
+	verb := ""
+	for i := 1; i < len(tokens); i++ {
+		tok := tokens[i]
+
+		// Check if it's a known global flag (exact match or --flag=value)
+		flagName := tok
+		if eqIdx := strings.Index(tok, "="); eqIdx > 0 && strings.HasPrefix(tok, "-") {
+			flagName = tok[:eqIdx]
+		}
+		if spec, ok := s.flags[flagName]; ok {
+			// If --flag=value, the arg is already consumed in this token
+			if spec.takesArg && flagName == tok && i+1 < len(tokens) {
+				i++ // consume the next token as the flag's argument
+			}
+			continue
+		}
+
+		// Unknown flag (starts with -): skip it.
+		// This handles short flag clusters like -vvv or unknown --flags.
+		// If it looks like --flag=value, skip just this token.
+		if strings.HasPrefix(tok, "-") {
+			continue
+		}
+
+		// First non-flag token is the verb
+		verb = tok
+		break
+	}
+
+	if verb == "" {
+		return s.result(false), nil
+	}
+
+	matched := false
+	for _, v := range s.verbs {
+		if verb == v {
+			matched = true
+			break
+		}
+	}
+
+	return s.result(matched), nil
+}
+
+func (s *commandVerbStage) result(matched bool) pipeline.StageResult {
+	if s.negate {
+		matched = !matched
+	}
+	if matched {
+		return pipeline.Continue
+	}
+	return pipeline.Skip
+}
+
+// tokenizeCommand splits a command string into tokens, respecting quotes.
+// "git -C '/path with spaces' log" → ["git", "-C", "/path with spaces", "log"]
+func tokenizeCommand(cmd string) []string {
+	var tokens []string
+	var current strings.Builder
+	inSingle := false
+	inDouble := false
+
+	for i := 0; i < len(cmd); i++ {
+		ch := cmd[i]
+		switch {
+		case ch == '\'' && !inDouble:
+			inSingle = !inSingle
+		case ch == '"' && !inSingle:
+			inDouble = !inDouble
+		case ch == '\\' && inDouble && i+1 < len(cmd):
+			i++
+			current.WriteByte(cmd[i])
+		case (ch == ' ' || ch == '\t') && !inSingle && !inDouble:
+			if current.Len() > 0 {
+				tokens = append(tokens, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteByte(ch)
+		}
+	}
+	if current.Len() > 0 {
+		tokens = append(tokens, current.String())
+	}
+	return tokens
 }

@@ -56,6 +56,11 @@ type StageConfig struct {
 	Prefixes  []string `json:"prefixes,omitempty" yaml:"prefixes,omitempty"`
 	Tool      string   `json:"tool,omitempty" yaml:"tool,omitempty"`
 	Use       string   `json:"use,omitempty" yaml:"use,omitempty"`
+
+	// command-verb stage fields
+	Command     string            `json:"command,omitempty" yaml:"command,omitempty"`
+	Verb        []string          `json:"verb,omitempty" yaml:"verb,omitempty"`
+	GlobalFlags map[string]string `json:"global-flags,omitempty" yaml:"global-flags,omitempty"`
 }
 
 // Load reads and parses a rules config file. Supports JSON and YAML.
