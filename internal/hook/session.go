@@ -115,6 +115,7 @@ func fetchIndex(url, apiKey string) string {
 		return ""
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+resolvedKey)
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil {
@@ -128,6 +129,14 @@ func fetchIndex(url, apiKey string) string {
 	if err != nil {
 		return ""
 	}
+
+	// MCP StreamableHTTPHandler returns SSE: "event: message\ndata: {...}\n\n"
+	// Extract the JSON from the "data:" line.
+	jsonData := extractSSEData(body)
+	if jsonData == nil {
+		return ""
+	}
+
 	var rpcResp struct {
 		Result *struct {
 			Content []struct {
@@ -135,13 +144,28 @@ func fetchIndex(url, apiKey string) string {
 			} `json:"content"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(body, &rpcResp); err != nil {
+	if err := json.Unmarshal(jsonData, &rpcResp); err != nil {
 		return ""
 	}
 	if rpcResp.Result == nil || len(rpcResp.Result.Content) == 0 {
 		return ""
 	}
 	return rpcResp.Result.Content[0].Text
+}
+
+// extractSSEData extracts the JSON payload from an SSE response.
+// Looks for lines starting with "data: " and returns the first JSON object found.
+func extractSSEData(body []byte) []byte {
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		if bytes.HasPrefix(line, []byte("data: ")) {
+			return line[6:]
+		}
+	}
+	// Fallback: maybe it's plain JSON (not SSE)
+	if len(body) > 0 && body[0] == '{' {
+		return body
+	}
+	return nil
 }
 
 func resolveSimpleSecret(uri string) string {
