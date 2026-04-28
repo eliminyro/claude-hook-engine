@@ -105,8 +105,24 @@ type onBranchStage struct {
 
 func (s *onBranchStage) Name() string             { return "on-branch" }
 func (s *onBranchStage) Type() pipeline.StageType { return pipeline.ClassifierType }
+
+// cdDirRe captures the directory from a leading "cd <path> &&" in a shell command.
+var cdDirRe = regexp.MustCompile(`^\s*cd\s+(\S+)\s*&&`)
+
 func (s *onBranchStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
-	out, err := exec.Command("git", "branch", "--show-current").Output()
+	// If the raw command starts with "cd <dir> &&", run git in that directory
+	// so git worktrees (different branch than session CWD) are handled correctly.
+	// We read ToolInput["command"] (raw) rather than ctx.Command() (normalized/cd-stripped).
+	var gitArgs []string
+	if raw, _ := ctx.ToolInput["command"].(string); raw != "" {
+		if m := cdDirRe.FindStringSubmatch(raw); m != nil {
+			gitArgs = []string{"-C", m[1], "branch", "--show-current"}
+		}
+	}
+	if gitArgs == nil {
+		gitArgs = []string{"branch", "--show-current"}
+	}
+	out, err := exec.Command("git", gitArgs...).Output()
 	if err != nil {
 		// Not in a git repo — skip rule
 		return pipeline.Skip, nil
