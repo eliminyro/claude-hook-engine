@@ -44,7 +44,7 @@
       "description": "Block commands that would print secret values to stdout",
       "pipeline": [
         { "stage": "has-template" },
-        { "stage": "template-leaks-value", "prefixes": ["curl ", "wget ", "ansible-playbook ", "ansible ", "kubectl ", "docker ", "helm ", "ssh ", "scp ", "sshpass ", "rsync ", "git ", "glab ", "mysql ", "psql ", "redis-cli ", "openssl ", "jq "] },
+        { "stage": "template-leaks-value", "prefixes": ["curl ", "wget ", "ansible-playbook ", "ansible ", "kubectl ", "docker ", "helm ", "ssh ", "scp ", "sshpass ", "rsync ", "git ", "glab ", "mysql ", "psql ", "redis-cli ", "openssl ", "jq ", "secretctl exec "] },
         { "stage": "deny", "message": "Secret templates must not be echoed to stdout. Use them as arguments to commands (e.g. curl -H 'Authorization: {{vault:...}}')." }
       ]
     },
