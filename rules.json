@@ -34,7 +34,7 @@
       "tool": "Bash",
       "description": "Block direct secret retrieval commands",
       "pipeline": [
-        { "stage": "command-prefix", "args": ["vault kv get ", "vault read ", "vault kv show ", "gcloud secrets versions access "] },
+        { "stage": "command-prefix", "args": ["vault kv get ", "vault read ", "vault kv show ", "gcloud secrets versions access ", "secretctl get ", "skill secrets get ", "skill secrets show ", "ansible-vault view ", "gh secret list ", "op read ", "op item get ", "pass show "] },
         { "stage": "deny", "message": "Direct secret retrieval is blocked. Use {{vault:mount@path:field}} or {{gcp:project/secret}} templates instead." }
       ]
     },
