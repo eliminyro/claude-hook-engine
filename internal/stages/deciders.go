@@ -132,6 +132,14 @@ func (s *rewriteExecStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 		prefix = ctx.Exec.RewritePrefix
 	}
 	rawCmd, _ := ctx.ToolInput["command"].(string)
+	// If the user already wrote the wrapper themselves, don't prepend it
+	// again — double-wrapping makes secretctl's child command literally
+	// "secretctl", which its leak guard rejects.
+	if strings.HasPrefix(rawCmd, prefix) {
+		ctx.Result.PermissionDecision = "allow"
+		ctx.Result.SystemMessage = "Template already wrapped"
+		return pipeline.Done, nil
+	}
 	ctx.Result.PermissionDecision = "allow"
 	ctx.Result.SystemMessage = "Template rewritten to exec"
 	ctx.Result.UpdatedInput = map[string]any{
