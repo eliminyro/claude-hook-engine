@@ -3,11 +3,20 @@
   "defaults": {},
   "pre": [
     {
-      "id": "dangerous-commands",
+      "id": "destructive-verbs",
       "tool": "Bash",
-      "description": "Block destructive commands",
+      "description": "Block destructive command verbs (AST-aware, ignores quoted text)",
       "pipeline": [
-        { "stage": "command-contains", "args": ["dd if=", "mkfs.", "chmod 777", "shutdown", "reboot"] },
+        { "stage": "has-command", "args": ["shutdown", "reboot", "mkfs."] },
+        { "stage": "deny", "message": "Blocked: destructive command" }
+      ]
+    },
+    {
+      "id": "dangerous-flag-patterns",
+      "tool": "Bash",
+      "description": "Block dangerous argument patterns",
+      "pipeline": [
+        { "stage": "command-contains", "args": ["dd if=", "chmod 777"] },
         { "stage": "deny", "message": "Blocked: destructive command" }
       ]
     },
