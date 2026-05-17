@@ -175,3 +175,116 @@ func TestExtractCommitMessageHeredoc(t *testing.T) {
 		t.Errorf("expected %q, got %q", want, got)
 	}
 }
+
+// initGitRepoOnBranch wraps initGitRepo with a checkout to a known branch so
+// tests don't depend on git's init.defaultBranch setting (main vs master).
+func initGitRepoOnBranch(t *testing.T, dir, branch string) (absDir string) {
+	t.Helper()
+	absDir, _, _ = initGitRepo(t, dir)
+	cmd := exec.Command("git", "checkout", "-q", "-b", branch)
+	cmd.Dir = absDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("checkout -b %s: %v\n%s", branch, err, string(out))
+	}
+	return absDir
+}
+
+func TestOnBranchMatches(t *testing.T) {
+	absDir := initGitRepoOnBranch(t, t.TempDir(), "feat/test")
+	t.Chdir(absDir)
+
+	stage, err := stages.Build(config.StageConfig{Stage: "on-branch", Args: []string{"feat/test", "main"}})
+	if err != nil {
+		t.Fatalf("build on-branch: %v", err)
+	}
+	ctx := newCtx("git status")
+	result, err := stage.Run(ctx)
+	if err != nil {
+		t.Fatalf("run on-branch: %v", err)
+	}
+	if result != pipeline.Continue {
+		t.Fatalf("expected Continue, got %d", result)
+	}
+	if ctx.Bag["branch"] != "feat/test" {
+		t.Errorf("expected bag[branch]=feat/test, got %v", ctx.Bag["branch"])
+	}
+}
+
+func TestOnBranchNoMatch(t *testing.T) {
+	absDir := initGitRepoOnBranch(t, t.TempDir(), "feat/test")
+	t.Chdir(absDir)
+
+	stage, err := stages.Build(config.StageConfig{Stage: "on-branch", Args: []string{"main", "master"}})
+	if err != nil {
+		t.Fatalf("build on-branch: %v", err)
+	}
+	ctx := newCtx("git status")
+	result, err := stage.Run(ctx)
+	if err != nil {
+		t.Fatalf("run on-branch: %v", err)
+	}
+	if result != pipeline.Skip {
+		t.Fatalf("expected Skip, got %d", result)
+	}
+}
+
+func TestOnBranchNegate(t *testing.T) {
+	absDir := initGitRepoOnBranch(t, t.TempDir(), "feat/test")
+	t.Chdir(absDir)
+
+	stage, err := stages.Build(config.StageConfig{
+		Stage:  "on-branch",
+		Args:   []string{"feat/test"},
+		Negate: true,
+	})
+	if err != nil {
+		t.Fatalf("build on-branch: %v", err)
+	}
+	ctx := newCtx("git status")
+	result, err := stage.Run(ctx)
+	if err != nil {
+		t.Fatalf("run on-branch: %v", err)
+	}
+	if result != pipeline.Skip {
+		t.Fatalf("expected Skip (negated match on current branch), got %d", result)
+	}
+}
+
+func TestOnBranchCdPrefixUsesTargetDir(t *testing.T) {
+	absDir := initGitRepoOnBranch(t, t.TempDir(), "feat/test")
+
+	// cwd is unrelated; the cd-prefix in the command must steer git -C to absDir.
+	unrelated := t.TempDir()
+	t.Chdir(unrelated)
+
+	stage, err := stages.Build(config.StageConfig{Stage: "on-branch", Args: []string{"feat/test"}})
+	if err != nil {
+		t.Fatalf("build on-branch: %v", err)
+	}
+	ctx := newCtx("cd " + absDir + " && git status")
+	result, err := stage.Run(ctx)
+	if err != nil {
+		t.Fatalf("run on-branch: %v", err)
+	}
+	if result != pipeline.Continue {
+		t.Fatalf("expected Continue (cd-prefix routes git to repo on feat/test), got %d", result)
+	}
+}
+
+func TestOnBranchNotInRepo(t *testing.T) {
+	nonRepo := t.TempDir()
+	t.Chdir(nonRepo)
+
+	stage, err := stages.Build(config.StageConfig{Stage: "on-branch", Args: []string{"main"}})
+	if err != nil {
+		t.Fatalf("build on-branch: %v", err)
+	}
+	ctx := newCtx("git status")
+	result, err := stage.Run(ctx)
+	if err != nil {
+		t.Fatalf("run on-branch: %v", err)
+	}
+	if result != pipeline.Skip {
+		t.Fatalf("expected Skip (not in a git repo), got %d", result)
+	}
+}
