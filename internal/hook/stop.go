@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,10 +9,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 )
+
+var sessionIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+const memoryAgentTimeout = 60 * time.Second
 
 type stopInput struct {
 	SessionID      string `json:"session_id"`
@@ -41,6 +48,10 @@ func HandleSessionStop(r io.Reader, rulesPath string) (string, error) {
 
 	transcriptPath := inp.TranscriptPath
 	if transcriptPath == "" {
+		if !sessionIDRe.MatchString(inp.SessionID) {
+			slog.Debug("rejecting suspicious session_id", "session_id", inp.SessionID)
+			return "", nil
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", nil
@@ -65,17 +76,22 @@ func HandleSessionStop(r io.Reader, rulesPath string) (string, error) {
 	}
 	args = append(args, transcriptPath)
 
-	cmd := exec.Command(binaryPath, args...)
+	cmdCtx, cancel := context.WithTimeout(context.Background(), memoryAgentTimeout)
+	cmd := exec.CommandContext(cmdCtx, binaryPath, args...)
 	cmd.Env = append(os.Environ(), "MEMORY_AGENT_INVOKED=1")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 
 	if err := cmd.Start(); err != nil {
+		cancel()
 		slog.Debug("failed to spawn memory-agent", "error", err)
 		return "", nil
 	}
 
-	go cmd.Wait()
+	go func() {
+		defer cancel()
+		_ = cmd.Wait()
+	}()
 
 	slog.Debug("spawned memory-agent", "pid", cmd.Process.Pid, "transcript", transcriptPath)
 	return "", nil

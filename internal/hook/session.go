@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -65,7 +67,11 @@ func HandleSessionStart(r io.Reader, rulesPath string) (string, error) {
 			"additionalContext": combined,
 		},
 	}
-	b, _ := json.Marshal(out)
+	b, err := json.Marshal(out)
+	if err != nil {
+		slog.Debug("marshaling session-start output", "error", err)
+		return "", nil
+	}
 	return string(b), nil
 }
 
@@ -172,14 +178,22 @@ func resolveSimpleSecret(uri string) string {
 	switch {
 	case strings.HasPrefix(uri, "file://"):
 		path := strings.TrimPrefix(uri, "file://")
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
 		if strings.HasPrefix(path, "~") {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return ""
-			}
 			path = home + path[1:]
 		}
-		data, err := os.ReadFile(path)
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			return ""
+		}
+		// Containment: only allow reads under the user's home directory.
+		if abs != home && !strings.HasPrefix(abs, home+string(filepath.Separator)) {
+			return ""
+		}
+		data, err := os.ReadFile(abs)
 		if err != nil {
 			return ""
 		}

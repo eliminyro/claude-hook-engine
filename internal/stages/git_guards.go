@@ -3,6 +3,7 @@ package stages
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -205,8 +206,10 @@ func (s *messageMatchesStage) Run(ctx *pipeline.PipelineContext) (pipeline.Stage
 }
 
 // extractCommitMessage pulls the message from a git commit command.
-// Handles: -m "msg", -m 'msg', heredoc via cat <<'EOF'
-var commitMsgFlag = regexp.MustCompile(`-m\s+(?:"([^"]+)"|'([^']+)')`)
+// Handles: -m "msg", -m 'msg', -m unquoted-token, heredoc via cat <<'EOF'.
+// NOTE: -F <file> is intentionally not supported — reading a file from the hook
+// process is racy and path-fragile. Commits using -F bypass message-based rules.
+var commitMsgFlag = regexp.MustCompile(`-m\s+(?:"([^"]+)"|'([^']+)'|([^\s'"][^\s]*))`)
 var commitMsgHeredoc = regexp.MustCompile(`(?s)<<'?EOF'?\n(.*?)\nEOF`)
 
 func extractCommitMessage(cmd string) string {
@@ -215,7 +218,10 @@ func extractCommitMessage(cmd string) string {
 		if m[1] != "" {
 			return m[1]
 		}
-		return m[2]
+		if m[2] != "" {
+			return m[2]
+		}
+		return m[3]
 	}
 	// Try heredoc
 	if m := commitMsgHeredoc.FindStringSubmatch(cmd); m != nil {
@@ -260,12 +266,21 @@ func (s *diffSizeStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult
 		return pipeline.Skip, nil
 	}
 
+	// Resolve git's working dir: prefer the file's directory (handles edits
+	// across repos), fall back to the session cwd.
+	gitDir := filepath.Dir(filePath)
+	if !filepath.IsAbs(filePath) {
+		if cwd, _ := ctx.Bag["cwd"].(string); cwd != "" {
+			gitDir = cwd
+		}
+	}
+
 	// Check if tracked
-	if err := exec.Command("git", "ls-files", "--error-unmatch", filePath).Run(); err != nil {
+	if err := exec.Command("git", "-C", gitDir, "ls-files", "--error-unmatch", filePath).Run(); err != nil {
 		return pipeline.Skip, nil
 	}
 
-	out, err := exec.Command("git", "diff", "--", filePath).Output()
+	out, err := exec.Command("git", "-C", gitDir, "diff", "--", filePath).Output()
 	if err != nil {
 		return pipeline.Skip, nil
 	}

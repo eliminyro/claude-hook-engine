@@ -19,6 +19,8 @@ func RunPipeline(ctx *PipelineContext, rules []RuleExec, normalizer Stage) bool 
 	if ctx.ToolName == "Bash" && normalizer != nil {
 		if _, err := normalizer.Run(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "hook: normalizer error: %v\n", err)
+			// Surface so secret-path stages can fail closed.
+			ctx.Bag["normalize_failed"] = true
 		}
 	}
 

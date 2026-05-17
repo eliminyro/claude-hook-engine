@@ -97,6 +97,11 @@ var envVarRe = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*=(?:'[^']*'|"[^"]*"|[^ \t]*)
 // cdPrefixRe matches "cd <path>" followed by && or ; (with optional surrounding spaces).
 var cdPrefixRe = regexp.MustCompile(`^cd\s+\S+\s*(?:&&|;)\s*`)
 
+// sudoPrefixRe matches "sudo" plus common flag forms: "-u user", short bundled flags
+// (-E, -H, -i, -n, -k, -v), and "--", followed by whitespace before the real command.
+// Strips so downstream prefix-based stages see the underlying command.
+var sudoPrefixRe = regexp.MustCompile(`^sudo(?:\s+-u\s+\S+|\s+-[EHinkv]+|\s+--)*\s+`)
+
 func (s *normalizeCommandStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	raw, _ := ctx.ToolInput["command"].(string)
 	cmd := strings.TrimLeft(raw, " \t")
@@ -121,6 +126,11 @@ func (s *normalizeCommandStage) Run(ctx *pipeline.PipelineContext) (pipeline.Sta
 			}
 			cmd = strings.TrimLeft(rest, " \t")
 		}
+	}
+
+	// Strip a leading sudo invocation so prefix-based stages match the real command.
+	if loc := sudoPrefixRe.FindStringIndex(cmd); loc != nil {
+		cmd = strings.TrimLeft(cmd[loc[1]:], " \t")
 	}
 
 	ctx.Bag["command"] = cmd
@@ -459,9 +469,23 @@ func (s *templateLeaksValueStage) Run(ctx *pipeline.PipelineContext) (pipeline.S
 		return pipeline.Skip, nil
 	}
 
+	// If normalization failed, we can't trust prefix matching — fail closed.
+	if failed, _ := ctx.Bag["normalize_failed"].(bool); failed {
+		return pipeline.Continue, nil
+	}
+
 	cmd := ctx.Command()
 	for _, prefix := range s.allowedPrefixes {
-		if strings.HasPrefix(cmd, prefix) {
+		if !strings.HasPrefix(cmd, prefix) {
+			continue
+		}
+		// Require a word boundary so a misconfigured "curl" prefix can't
+		// whitelist "curl-anything". Rules conventionally end prefixes with " ".
+		if len(cmd) == len(prefix) {
+			return pipeline.Skip, nil
+		}
+		next := cmd[len(prefix)]
+		if prefix[len(prefix)-1] == ' ' || next == ' ' || next == '\t' {
 			return pipeline.Skip, nil
 		}
 	}
