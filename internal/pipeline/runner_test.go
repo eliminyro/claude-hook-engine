@@ -1,6 +1,7 @@
 package pipeline_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
@@ -222,5 +223,86 @@ func TestRunnerNormalizerSkippedForNonBash(t *testing.T) {
 	pipeline.RunPipeline(ctx, nil, normalizer)
 	if _, ok := ctx.Bag["normalized"]; ok {
 		t.Error("normalizer should NOT run for non-Bash tools")
+	}
+}
+
+func TestRunnerNormalizerErrorSetsFailedFlag(t *testing.T) {
+	ctx := &pipeline.PipelineContext{
+		Event:     "pre",
+		ToolName:  "Bash",
+		ToolInput: map[string]any{"command": "ls"},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
+	}
+
+	normalizer := &mockStage{
+		name:      "normalize-command",
+		stageType: pipeline.ClassifierType,
+		runFn: func(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+			return pipeline.Skip, fmt.Errorf("boom")
+		},
+	}
+
+	pipeline.RunPipeline(ctx, nil, normalizer)
+
+	failed, ok := ctx.Bag["normalize_failed"].(bool)
+	if !ok {
+		t.Fatalf("expected normalize_failed to be set as bool, got %T (%v)", ctx.Bag["normalize_failed"], ctx.Bag["normalize_failed"])
+	}
+	if !failed {
+		t.Error("expected normalize_failed to be true when normalizer errors")
+	}
+}
+
+func TestRunnerNormalizerSuccessLeavesFlagUnset(t *testing.T) {
+	ctx := &pipeline.PipelineContext{
+		Event:     "pre",
+		ToolName:  "Bash",
+		ToolInput: map[string]any{"command": "ls"},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
+	}
+
+	normalizer := &mockStage{
+		name:      "normalize-command",
+		stageType: pipeline.ClassifierType,
+		runFn: func(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+			return pipeline.Continue, nil
+		},
+	}
+
+	pipeline.RunPipeline(ctx, nil, normalizer)
+
+	if _, ok := ctx.Bag["normalize_failed"]; ok {
+		t.Errorf("expected normalize_failed to be unset on success, got %v", ctx.Bag["normalize_failed"])
+	}
+}
+
+func TestRunnerNonBashSkipsNormalizerEvenOnError(t *testing.T) {
+	ctx := &pipeline.PipelineContext{
+		Event:     "pre",
+		ToolName:  "Read",
+		ToolInput: map[string]any{},
+		Bag:       make(map[string]any),
+		Result:    &pipeline.HookResult{},
+	}
+
+	called := false
+	normalizer := &mockStage{
+		name:      "normalize-command",
+		stageType: pipeline.ClassifierType,
+		runFn: func(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+			called = true
+			return pipeline.Skip, fmt.Errorf("should not be called")
+		},
+	}
+
+	pipeline.RunPipeline(ctx, nil, normalizer)
+
+	if called {
+		t.Error("normalizer should NOT be invoked for non-Bash tools")
+	}
+	if _, ok := ctx.Bag["normalize_failed"]; ok {
+		t.Errorf("expected normalize_failed to be unset for non-Bash tools, got %v", ctx.Bag["normalize_failed"])
 	}
 }

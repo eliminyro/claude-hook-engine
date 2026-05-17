@@ -473,6 +473,164 @@ func TestCommandVerbNegate(t *testing.T) {
 	}
 }
 
+func TestNormalizeCommandStripsSudo(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"sudo curl http://x", "curl http://x"},
+		{"sudo -E curl http://x", "curl http://x"},
+		{"sudo -u user curl http://x", "curl http://x"},
+		{"sudo -- curl http://x", "curl http://x"},
+		{"cd /repo && sudo -E curl http://x", "curl http://x"},
+	}
+
+	stage, err := stages.Build(config.StageConfig{Stage: "normalize-command"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range tests {
+		ctx := newCtx(tc.input)
+		result, err := stage.Run(ctx)
+		if err != nil {
+			t.Errorf("input %q: unexpected error: %v", tc.input, err)
+			continue
+		}
+		if result != pipeline.Continue {
+			t.Errorf("input %q: expected Continue, got %d", tc.input, result)
+		}
+		got := ctx.Bag["command"].(string)
+		if got != tc.expected {
+			t.Errorf("input %q: expected %q, got %q", tc.input, tc.expected, got)
+		}
+	}
+}
+
+func TestNormalizeCommandPreservesSudoNonBinary(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"sudoers config check", "sudoers config check"},
+		{"/usr/bin/sudo curl http://x", "/usr/bin/sudo curl http://x"},
+	}
+
+	stage, err := stages.Build(config.StageConfig{Stage: "normalize-command"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range tests {
+		ctx := newCtx(tc.input)
+		result, err := stage.Run(ctx)
+		if err != nil {
+			t.Errorf("input %q: unexpected error: %v", tc.input, err)
+			continue
+		}
+		if result != pipeline.Continue {
+			t.Errorf("input %q: expected Continue, got %d", tc.input, result)
+		}
+		got := ctx.Bag["command"].(string)
+		if got != tc.expected {
+			t.Errorf("input %q: expected %q, got %q", tc.input, tc.expected, got)
+		}
+	}
+}
+
+func TestTemplateLeaksValueWordBoundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		prefixes []string
+		expected pipeline.StageResult
+		desc     string
+	}{
+		{
+			name:     "prefix without space allows exact-word match",
+			command:  "curl http://x {{vault:ansible@common:key}}",
+			prefixes: []string{"curl"},
+			expected: pipeline.Skip,
+			desc:     "curl (no trailing space prefix) should whitelist 'curl http://x'",
+		},
+		{
+			name:     "prefix without space blocks substring match",
+			command:  "curl-anything http://x {{vault:ansible@common:key}}",
+			prefixes: []string{"curl"},
+			expected: pipeline.Continue,
+			desc:     "curl prefix must NOT whitelist 'curl-anything'",
+		},
+		{
+			name:     "prefix with trailing space still works",
+			command:  "curl http://x {{vault:ansible@common:key}}",
+			prefixes: []string{"curl "},
+			expected: pipeline.Skip,
+			desc:     "current convention 'curl ' (with trailing space) still whitelists",
+		},
+	}
+
+	hasTemplateStage, _ := stages.Build(config.StageConfig{Stage: "has-template"})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			leakStage, err := stages.Build(config.StageConfig{
+				Stage:    "template-leaks-value",
+				Prefixes: tc.prefixes,
+			})
+			if err != nil {
+				t.Fatalf("build error: %v", err)
+			}
+			ctx := newCtx(tc.command)
+			ctx.Bag["command"] = tc.command
+			hasTemplateStage.Run(ctx)
+			result, err := leakStage.Run(ctx)
+			if err != nil {
+				t.Fatalf("run error: %v", err)
+			}
+			if result != tc.expected {
+				t.Errorf("%s (command %q, prefixes %v): expected %d, got %d", tc.desc, tc.command, tc.prefixes, tc.expected, result)
+			}
+		})
+	}
+}
+
+func TestTemplateLeaksValueFailsClosedOnNormalizeFailed(t *testing.T) {
+	leakStage, err := stages.Build(config.StageConfig{
+		Stage:    "template-leaks-value",
+		Prefixes: []string{"curl "},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := "curl -H '{{vault:ansible@common:key}}' https://api.com"
+
+	// Control: normalize_failed unset → normal allow-via-prefix → Skip.
+	ctrl := newCtx(cmd)
+	ctrl.Bag["command"] = cmd
+	ctrl.Bag["has_template"] = true
+	ctrlResult, err := leakStage.Run(ctrl)
+	if err != nil {
+		t.Fatalf("control run error: %v", err)
+	}
+	if ctrlResult != pipeline.Skip {
+		t.Errorf("control (normalize_failed unset): expected Skip, got %d", ctrlResult)
+	}
+
+	// Fail-closed: normalize_failed=true forces Continue (treat as leak) even when
+	// the command would otherwise be whitelisted by prefix.
+	failed := newCtx(cmd)
+	failed.Bag["command"] = cmd
+	failed.Bag["has_template"] = true
+	failed.Bag["normalize_failed"] = true
+	failedResult, err := leakStage.Run(failed)
+	if err != nil {
+		t.Fatalf("fail-closed run error: %v", err)
+	}
+	if failedResult != pipeline.Continue {
+		t.Errorf("normalize_failed=true with template: expected Continue (fail closed), got %d", failedResult)
+	}
+}
+
 func TestTokenizeCommand(t *testing.T) {
 	// Exported via the stage's behavior — test indirectly through command-verb
 	tests := []struct {
