@@ -433,8 +433,11 @@ func (s *hasSubshellStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	return pipeline.Skip, nil
 }
 
-// templateRe matches {{vault:...}} and {{gcp:...}} template placeholders.
-var templateRe = regexp.MustCompile(`\{\{(?:vault|gcp):[^}]+\}\}`)
+// templateRe matches {{vault:...}}, {{gcp:...}}, and {{secret:...}} template
+// placeholders. Mirrors the regex in secretctl/internal/template — the hook
+// engine and secretctl agree on what counts as a template for rewrite +
+// leak-guard purposes.
+var templateRe = regexp.MustCompile(`\{\{(?:vault|gcp|secret):[^}]+\}\}`)
 
 // hasTemplateStage detects secret template placeholders.
 type hasTemplateStage struct{ negate bool }

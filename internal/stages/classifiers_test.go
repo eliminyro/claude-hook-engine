@@ -194,6 +194,8 @@ func TestHasTemplate(t *testing.T) {
 		{"curl -u '{{vault:ansible@common:user}}:{{vault:ansible@common:pass}}' https://api.com", true},
 		{"echo hello", false},
 		{"echo '{{gcp:project/secret}}'", true},
+		{"curl -H 'X-Tok: {{secret:gh_token}}' https://api.com", true},      // {{secret:...}} = local-store ref
+		{"curl '{{vault:x}}{{gcp:y/z}}{{secret:w}}' https://api.com", true}, // mixed types in one command
 		{"no templates here", false},
 	}
 
