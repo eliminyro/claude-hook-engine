@@ -54,6 +54,18 @@ func init() {
 		return &hasCommandStage{args: cfg.Args, negate: cfg.Negate}, nil
 	})
 
+	register("command-regex", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		res := make([]*regexp.Regexp, 0, len(cfg.Patterns))
+		for _, p := range cfg.Patterns {
+			re, err := regexp.Compile(p)
+			if err != nil {
+				return nil, fmt.Errorf("command-regex: bad pattern %q: %w", p, err)
+			}
+			res = append(res, re)
+		}
+		return &commandRegexStage{patterns: res, negate: cfg.Negate}, nil
+	})
+
 	register("line-count", func(cfg config.StageConfig) (pipeline.Stage, error) {
 		return &lineCountStage{}, nil
 	})
@@ -102,6 +114,26 @@ var cdPrefixRe = regexp.MustCompile(`^cd\s+\S+\s*(?:&&|;)\s*`)
 // Strips so downstream prefix-based stages see the underlying command.
 var sudoPrefixRe = regexp.MustCompile(`^sudo(?:\s+-u\s+\S+|\s+-[EHinkv]+|\s+--)*\s+`)
 
+// Structured passthrough wrappers — their inner command is what actually runs,
+// so we strip the wrapper prefix and let downstream stages analyze the real
+// command. This closes the leak-guard bypass where a leaky command is nested
+// inside an allowlisted wrapper (e.g. `docker exec c echo {{secret}}`).
+//
+// Only wrappers whose inner command can be reliably located are stripped here.
+// OPAQUE wrappers (ssh <host> <remote cmd>, sh/bash -c '<inline>') are NOT
+// stripped — their inner command can't be safely extracted — and are instead
+// denied by the leak-guard (ssh is off the allowlist; `-c` inline is blocklisted).
+var wrapperPrefixRes = []*regexp.Regexp{
+	// docker/podman [container] exec [flags [val]]... <container> <inner...>
+	regexp.MustCompile(`^(?:docker|podman)\s+(?:container\s+)?exec\s+(?:(?:-i|-t|-it|-ti|-d|--interactive|--tty|--detach|--privileged|--init)\s+|(?:-e|--env|-u|--user|-w|--workdir|--detach-keys|--env-file|-l|--label)\s+\S+\s+|(?:--?[A-Za-z][A-Za-z-]*=\S+)\s+)*\S+\s+`),
+	// kubectl exec ... -- <inner...>  (kubectl requires the -- delimiter)
+	regexp.MustCompile(`^kubectl\s+exec\b.*?\s--\s+`),
+	// timeout [opts [val]]... DURATION <inner...>
+	regexp.MustCompile(`^timeout\s+(?:(?:-s|--signal|-k|--kill-after)\s+\S+\s+|(?:--preserve-status|--foreground)\s+)*\S+\s+`),
+	// nohup <inner...>
+	regexp.MustCompile(`^nohup\s+`),
+}
+
 func (s *normalizeCommandStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	raw, _ := ctx.ToolInput["command"].(string)
 	cmd := strings.TrimLeft(raw, " \t")
@@ -128,9 +160,23 @@ func (s *normalizeCommandStage) Run(ctx *pipeline.PipelineContext) (pipeline.Sta
 		}
 	}
 
-	// Strip a leading sudo invocation so prefix-based stages match the real command.
-	if loc := sudoPrefixRe.FindStringIndex(cmd); loc != nil {
-		cmd = strings.TrimLeft(cmd[loc[1]:], " \t")
+	// Strip leading sudo and structured passthrough wrappers (docker/podman exec,
+	// kubectl exec, timeout, nohup) until stable, so the leak-guard analyzes the
+	// command that actually runs — not the wrapper. Looping handles nesting like
+	// `sudo docker exec c echo` and `docker exec c sudo echo`.
+	for {
+		before := cmd
+		if loc := sudoPrefixRe.FindStringIndex(cmd); loc != nil {
+			cmd = strings.TrimLeft(cmd[loc[1]:], " \t")
+		}
+		for _, re := range wrapperPrefixRes {
+			if loc := re.FindStringIndex(cmd); loc != nil {
+				cmd = strings.TrimLeft(cmd[loc[1]:], " \t")
+			}
+		}
+		if cmd == before {
+			break
+		}
 	}
 
 	ctx.Bag["command"] = cmd
@@ -495,6 +541,40 @@ func (s *templateLeaksValueStage) Run(ctx *pipeline.PipelineContext) (pipeline.S
 
 	// Not a known consumer — assume it leaks
 	return pipeline.Continue, nil
+}
+
+// commandRegexStage matches the normalized command against a set of regex
+// patterns. Returns Continue when any pattern matches (or none match, if
+// negate is set), else Skip — mirroring has-command so it composes with deny.
+//
+// Unlike command-prefix (literal, anchored at the start), regex matching is
+// position-aware: a pattern like `(^|/)python3?\b` matches `.venv/bin/python`
+// regardless of the path, and `\s-c(\s|$)` can target a specific subcommand
+// (block `python -c` while leaving `python script.py` alone).
+type commandRegexStage struct {
+	patterns []*regexp.Regexp
+	negate   bool
+}
+
+func (s *commandRegexStage) Name() string             { return "command-regex" }
+func (s *commandRegexStage) Type() pipeline.StageType { return pipeline.ClassifierType }
+func (s *commandRegexStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	cmd := ctx.Command()
+	found := false
+	for _, re := range s.patterns {
+		if re.MatchString(cmd) {
+			found = true
+			break
+		}
+	}
+	matched := found
+	if s.negate {
+		matched = !matched
+	}
+	if matched {
+		return pipeline.Continue, nil
+	}
+	return pipeline.Skip, nil
 }
 
 // detectFormatStage classifies the tool output format.

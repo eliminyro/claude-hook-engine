@@ -78,6 +78,102 @@ func TestCommandContains(t *testing.T) {
 	}
 }
 
+func TestCommandRegex(t *testing.T) {
+	tests := []struct {
+		name     string
+		command  string
+		patterns []string
+		expected pipeline.StageResult
+	}{
+		{
+			"path-aware interpreter match",
+			".venv/bin/python /tmp/list.py secret",
+			[]string{`(^|/)python3?(\s|$)`},
+			pipeline.Continue,
+		},
+		{
+			"bare interpreter match",
+			"python3 script.py",
+			[]string{`(^|/)python3?(\s|$)`},
+			pipeline.Continue,
+		},
+		{
+			"inline -c pattern: script invocation does NOT match",
+			"python script.py arg",
+			[]string{`(^|/)python3?\s+(-\S+\s+)*-c(\s|$)`},
+			pipeline.Skip,
+		},
+		{
+			"inline -c pattern matches python -c",
+			"python -c 'print(1)'",
+			[]string{`(^|/)python3?\s+(-\S+\s+)*-c(\s|$)`},
+			pipeline.Continue,
+		},
+		{
+			"inline -c pattern matches with preceding flag",
+			"python -O -c 'print(1)'",
+			[]string{`(^|/)python3?\s+(-\S+\s+)*-c(\s|$)`},
+			pipeline.Continue,
+		},
+		{
+			"no pattern matches",
+			"ls -la",
+			[]string{`(^|/)python3?(\s|$)`, `(^|/)echo(\s|$)`},
+			pipeline.Skip,
+		},
+		{
+			"any-of matches",
+			"echo hi",
+			[]string{`(^|/)python3?(\s|$)`, `(^|/)echo(\s|$)`},
+			pipeline.Continue,
+		},
+	}
+
+	for _, tc := range tests {
+		stage, err := stages.Build(config.StageConfig{Stage: "command-regex", Patterns: tc.patterns})
+		if err != nil {
+			t.Fatalf("%s: build error: %v", tc.name, err)
+		}
+		ctx := newCtx(tc.command)
+		ctx.Bag["command"] = tc.command
+		result, err := stage.Run(ctx)
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", tc.name, err)
+		}
+		if result != tc.expected {
+			t.Errorf("%s: command %q patterns %v: expected %d, got %d", tc.name, tc.command, tc.patterns, tc.expected, result)
+		}
+	}
+}
+
+func TestCommandRegexNegate(t *testing.T) {
+	// negate=true: a command NOT matching any allow pattern should Continue
+	// (used to express "deny templates for commands outside the allowlist").
+	stage, _ := stages.Build(config.StageConfig{
+		Stage:    "command-regex",
+		Patterns: []string{`(^|/)curl(\s|$)`, `(^|/)python3?(\s|$)`},
+		Negate:   true,
+	})
+	ctx := newCtx("rm -rf /tmp/x")
+	ctx.Bag["command"] = "rm -rf /tmp/x"
+	if result, _ := stage.Run(ctx); result != pipeline.Continue {
+		t.Error("negated regex: non-allowlisted command should Continue (→ deny)")
+	}
+
+	ctx2 := newCtx("curl https://x")
+	ctx2.Bag["command"] = "curl https://x"
+	if result, _ := stage.Run(ctx2); result != pipeline.Skip {
+		t.Error("negated regex: allowlisted command should Skip (→ no deny)")
+	}
+}
+
+func TestCommandRegexBadPattern(t *testing.T) {
+	_, err := stages.Build(config.StageConfig{Stage: "command-regex", Patterns: []string{`(unclosed`}})
+	if err == nil {
+		t.Error("expected build error for invalid regex, got nil")
+	}
+}
+
 func TestHasCommand(t *testing.T) {
 	tests := []struct {
 		command  string
@@ -393,6 +489,53 @@ func TestNormalizeCommand(t *testing.T) {
 		}
 		if result != pipeline.Continue {
 			t.Errorf("input %q: expected Continue, got %d", tc.input, result)
+		}
+		got := ctx.Bag["command"].(string)
+		if got != tc.expected {
+			t.Errorf("input %q: expected %q, got %q", tc.input, tc.expected, got)
+		}
+	}
+}
+
+func TestNormalizeStripsWrappers(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// docker / podman exec, with and without flags
+		{"docker exec c echo hi", "echo hi"},
+		{"docker exec mycontainer cat /run/secret", "cat /run/secret"},
+		{"docker exec -it c echo hi", "echo hi"},
+		{"docker exec -e FOO=bar -u root c echo hi", "echo hi"},
+		{"podman exec c cat x", "cat x"},
+		{"docker container exec c echo hi", "echo hi"},
+		// nested: docker exec then sh -c (sh -c stays for the blocklist to catch)
+		{"docker exec c sh -c 'echo x'", "sh -c 'echo x'"},
+		// kubectl exec uses -- delimiter
+		{"kubectl exec pod -- echo hi", "echo hi"},
+		{"kubectl exec -it pod -c ctr -- cat /x", "cat /x"},
+		// timeout / nohup
+		{"timeout 5 curl http://x", "curl http://x"},
+		{"timeout -s KILL 5s echo hi", "echo hi"},
+		{"nohup curl http://x", "curl http://x"},
+		// nesting with sudo (loops until stable)
+		{"sudo docker exec c echo hi", "echo hi"},
+		{"docker exec c sudo echo hi", "echo hi"},
+		// non-wrappers untouched
+		{"docker ps", "docker ps"},
+		{"docker build -t x .", "docker build -t x ."},
+		{"ssh host echo hi", "ssh host echo hi"},
+	}
+
+	stage, err := stages.Build(config.StageConfig{Stage: "normalize-command"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range tests {
+		ctx := newCtx(tc.input)
+		if _, err := stage.Run(ctx); err != nil {
+			t.Errorf("input %q: unexpected error: %v", tc.input, err)
+			continue
 		}
 		got := ctx.Bag["command"].(string)
 		if got != tc.expected {

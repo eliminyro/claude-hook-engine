@@ -48,13 +48,49 @@
       ]
     },
     {
-      "id": "template-leak-guard",
+      "id": "template-block-leaky",
       "tool": "Bash",
-      "description": "Block commands that would print secret values to stdout",
+      "description": "Block secret templates given to commands that print args/stdin or run inline code (regex; blocklist wins, evaluated before the allow-guard)",
       "pipeline": [
         { "stage": "has-template" },
-        { "stage": "template-leaks-value", "prefixes": ["curl ", "wget ", "ansible-playbook ", "ansible ", "kubectl ", "docker ", "helm ", "ssh ", "scp ", "sshpass ", "rsync ", "git ", "glab ", "mysql ", "psql ", "redis-cli ", "openssl ", "jq ", "secretctl exec "] },
-        { "stage": "deny", "message": "Secret templates must not be echoed to stdout. Use them as arguments to commands (e.g. curl -H 'Authorization: {{vault:...}}')." }
+        { "stage": "command-regex", "patterns": [
+          "(^|/)(echo|printf)(\\s|$)",
+          "(^|/)cat(\\s|$)",
+          "(^|/)tee(\\s|$)",
+          "(^|/)(printenv|env|set|export)(\\s|$)",
+          "(^|/)(head|tail|less|more|xxd|hexdump|strings|od|base64)(\\s|$)",
+          "(^|/)python3?\\s+(-\\S+\\s+)*-c(\\s|$)",
+          "(^|/)(node|deno|bun)\\s+(-\\S+\\s+)*-e(\\s|$)",
+          "(^|/)(ruby|perl|php)\\s+(-\\S+\\s+)*-e(\\s|$)",
+          "(^|/)(sh|bash|zsh|dash|fish|ksh)\\s+(-\\S+\\s+)*-c(\\s|$)",
+          "(^|/)eval(\\s|$)"
+        ] },
+        { "stage": "deny", "message": "This command would expose secret values (it prints args/stdin or runs inline code). Pass secrets only as arguments to a consumer command (e.g. curl -H 'Authorization: {{vault:...}}'), or to a script file (python script.py {{vault:...}}) — not via -c/-e or echo/cat." }
+      ]
+    },
+    {
+      "id": "template-require-allowed-consumer",
+      "tool": "Bash",
+      "description": "Deny secret templates for any command not on the allowed-consumer list (regex; default-deny). Blocklist above takes precedence.",
+      "pipeline": [
+        { "stage": "has-template" },
+        { "stage": "command-regex", "negate": true, "patterns": [
+          "(^|/)(curl|wget)(\\s|$)",
+          "(^|/)(kubectl|helm)(\\s|$)",
+          "(^|/)(ansible|ansible-playbook|ansible-vault)(\\s|$)",
+          "(^|/)(docker|podman)(\\s|$)",
+          "(^|/)(sshpass|scp|rsync)(\\s|$)",
+          "(^|/)(psql|mysql|mongosh|redis-cli)(\\s|$)",
+          "(^|/)(openssl|htpasswd)(\\s|$)",
+          "(^|/)(aws|gcloud|az)(\\s|$)",
+          "(^|/)(terraform|tofu|vault|consul)(\\s|$)",
+          "(^|/)(gh|glab|git)(\\s|$)",
+          "(^|/)(npm|pip|go|cargo)(\\s|$)",
+          "(^|/)python3?(\\s|$)",
+          "(^|/)(node|deno|bun|ruby|perl|php)(\\s|$)",
+          "(^|/)secretctl\\s+exec(\\s|$)"
+        ] },
+        { "stage": "deny", "message": "Command is not an allowed secret consumer. Only known consumers (curl, kubectl, ssh, git, aws, python <script>, ...) may receive secret templates; everything else is denied by default. Add a pattern to template-require-allowed-consumer if this command is safe." }
       ]
     },
     {

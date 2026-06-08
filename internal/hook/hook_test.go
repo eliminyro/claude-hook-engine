@@ -170,6 +170,63 @@ func TestProductionRulesLoad(t *testing.T) {
 	}
 }
 
+func TestProductionLeakGuard(t *testing.T) {
+	// Drives the real production rules.json through HandlePre to verify the
+	// regex leak-guard: blocklist wins, default-deny for unknown, structured
+	// wrappers unwrapped, opaque wrappers denied, legit consumers rewritten.
+	rulesPath := "../../rules.json"
+	const tmpl = "{{vault:ansible@common:api_key}}"
+
+	tests := []struct {
+		name    string
+		command string
+		deny    bool
+	}{
+		// printers / dumpers — blocked
+		{"echo", "echo " + tmpl, true},
+		{"cat", "cat " + tmpl, true},
+		{"printf", "printf " + tmpl, true},
+		{"tee", "echo x | tee " + tmpl, true},
+		// inline code — blocked
+		{"python -c", "python -c 'print(1)' " + tmpl, true},
+		{"python3 -c with flag", "python3 -O -c 'x' " + tmpl, true},
+		{"node -e", "node -e 'x' " + tmpl, true},
+		{"sh -c", "sh -c 'echo " + tmpl + "'", true},
+		// wrapper bypass — unwrapped then blocked
+		{"docker exec echo", "docker exec c echo " + tmpl, true},
+		{"docker exec flags cat", "docker exec -it -e A=b c cat /run/" + tmpl, true},
+		{"podman exec echo", "podman exec c echo " + tmpl, true},
+		{"kubectl exec cat", "kubectl exec pod -- cat /run/" + tmpl, true},
+		{"sudo docker exec echo", "sudo docker exec c echo " + tmpl, true},
+		// opaque wrappers — denied (ssh off allowlist)
+		{"ssh remote echo", "ssh host echo " + tmpl, true},
+		// unknown command — default-deny
+		{"unknown", "frobnicate " + tmpl, true},
+		// legitimate consumers — NOT denied (rewritten)
+		{"curl header", `curl -H "Authorization: Bearer ` + tmpl + `" https://x`, false},
+		{"kubectl create", "kubectl create secret generic s --from-literal=k=" + tmpl, false},
+		{"python script file", "python /tmp/list.py " + tmpl, false},
+		{"venv python script", ".venv/bin/python /tmp/list.py " + tmpl, false},
+		{"docker exec psql", "docker exec c psql -c 'select 1' " + tmpl, false},
+		{"timeout curl", "timeout 5 curl -H x:" + tmpl + " https://y", false},
+		{"git", `git -c x="` + tmpl + `" status`, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf(`{"tool_name":"Bash","tool_input":{"command":%q},"session_id":"s","cwd":"/tmp"}`, tc.command)
+			output, err := hook.HandlePre(strings.NewReader(input), rulesPath)
+			if err != nil {
+				t.Fatalf("command %q: %v", tc.command, err)
+			}
+			denied := strings.Contains(output, `"deny"`)
+			if denied != tc.deny {
+				t.Errorf("command %q: expected deny=%v, got deny=%v (output=%s)", tc.command, tc.deny, denied, output)
+			}
+		})
+	}
+}
+
 func TestPostToolUseSmallOutput(t *testing.T) {
 	dir := t.TempDir()
 	rulesPath := filepath.Join(dir, "rules.json")

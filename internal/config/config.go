@@ -68,6 +68,7 @@ type StageConfig struct {
 	Message   string   `json:"message,omitempty" yaml:"message,omitempty"`
 	Condition string   `json:"condition,omitempty" yaml:"condition,omitempty"`
 	Prefixes  []string `json:"prefixes,omitempty" yaml:"prefixes,omitempty"`
+	Patterns  []string `json:"patterns,omitempty" yaml:"patterns,omitempty"`
 	Tool      string   `json:"tool,omitempty" yaml:"tool,omitempty"`
 	Use       string   `json:"use,omitempty" yaml:"use,omitempty"`
 
