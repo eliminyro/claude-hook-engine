@@ -173,6 +173,25 @@
       ]
     },
     {
+      "id": "ssh-block-dangerous-opts",
+      "tool": "Bash",
+      "description": "Block ssh/scp -o options that execute arbitrary code (ProxyCommand/LocalCommand/PermitLocalCommand). Denylist — the only -o options that run code.",
+      "pipeline": [
+        { "stage": "command-regex", "patterns": ["(^|[\\s;&|])(ssh|scp|sshpass)(\\s|$)"] },
+        { "stage": "command-regex", "patterns": ["(?i)(proxycommand|localcommand)"] },
+        { "stage": "deny", "message": "ssh -o ProxyCommand/LocalCommand/PermitLocalCommand can execute arbitrary code and is blocked. Remove the option." }
+      ]
+    },
+    {
+      "id": "ssh-allow-known-hosts",
+      "tool": "Bash",
+      "description": "Allow ssh to whitelisted machines. Host is matched in destination position after skipping -o/-x flags, so the alias can't be spoofed from inside a remote command. Edit the host alternation to add machines. Separated flag-args (-i FILE, -p PORT) are not skipped — use -oOpt=val forms or they fall through to a prompt.",
+      "pipeline": [
+        { "stage": "command-regex", "patterns": ["^ssh\\s+((-o\\s*\\S+|-[A-Za-z]\\S*)\\s+)*([a-z_][a-z0-9_.-]*@)?(nas|ovh|flatbox|stick|opn|claude-dev|claude-host|mac-work|nas-avanti)(\\s|$)"] },
+        { "stage": "allow" }
+      ]
+    },
+    {
       "id": "subshell-allow",
       "tool": "Bash",
       "description": "Allow subshells when all parts are permitted",
