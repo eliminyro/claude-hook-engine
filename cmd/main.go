@@ -10,7 +10,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: claude-hook-engine <pre|post|session-start|session-stop> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: claude-hook-engine <pre|post|session-start> [args...]")
 		os.Exit(1)
 	}
 
@@ -27,11 +27,6 @@ func main() {
 		}
 	case "session-start":
 		if err := runSessionStart(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	case "session-stop":
-		if err := runSessionStop(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -75,17 +70,6 @@ func runPost() error {
 
 func runSessionStart() error {
 	output, err := hook.HandleSessionStart(os.Stdin, rulesPath())
-	if err != nil {
-		return err
-	}
-	if output != "" {
-		fmt.Print(output)
-	}
-	return nil
-}
-
-func runSessionStop() error {
-	output, err := hook.HandleSessionStop(os.Stdin, rulesPath())
 	if err != nil {
 		return err
 	}

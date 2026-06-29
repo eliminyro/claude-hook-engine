@@ -26,7 +26,6 @@ type Config struct {
 	Post               []Rule                             `json:"post" yaml:"post"`
 	Projects           map[string]ProjectConfig           `json:"projects" yaml:"projects"`
 	MemoryMCP          MemoryMCPConfig                    `json:"memory_mcp" yaml:"memory_mcp"`
-	MemoryAgent        MemoryAgentConfig                  `json:"memory_agent" yaml:"memory_agent"`
 }
 
 // ProjectConfig maps directory patterns to project metadata for auto-context.
@@ -40,12 +39,6 @@ type ProjectConfig struct {
 type MemoryMCPConfig struct {
 	URL    string `json:"url" yaml:"url"`
 	APIKey string `json:"api_key" yaml:"api_key"`
-}
-
-// MemoryAgentConfig holds the path to the memory-agent binary.
-type MemoryAgentConfig struct {
-	BinaryPath string `json:"binary_path" yaml:"binary_path"`
-	ConfigPath string `json:"config_path" yaml:"config_path"`
 }
 
 type ProviderConfig struct {
@@ -204,9 +197,6 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.MemoryMCP.URL == "" {
 		cfg.MemoryMCP.URL = "https://memory-mcp.a11s.dev/mcp"
-	}
-	if cfg.MemoryAgent.BinaryPath == "" {
-		cfg.MemoryAgent.BinaryPath = "memory-agent"
 	}
 }
 
