@@ -30,6 +30,19 @@
       ]
     },
     {
+      "id": "find-delete-ask",
+      "tool": "Bash",
+      "description": "Ask before find deletes. No 'rm ' prefix appears, so rm-ask never sees these; must precede block-find-unbounded or the deny wins first",
+      "pipeline": [
+        { "stage": "command-prefix", "args": ["find "] },
+        { "stage": "command-regex", "patterns": [
+          "(^|\\s)-delete(\\s|$)",
+          "(^|\\s)-exec(dir)?\\s+(rm|shred|truncate|mv|dd)(\\s|$)"
+        ] },
+        { "stage": "ask" }
+      ]
+    },
+    {
       "id": "git-commit-ask",
       "tool": "Bash",
       "description": "Always ask before committing",
@@ -122,23 +135,32 @@
       ]
     },
     {
-      "id": "block-grep-no-pipe",
+      "id": "block-grep-unbounded",
       "tool": "Bash",
-      "description": "Redirect grep/rg to Grep tool when not piped",
+      "description": "Block only unbounded grep/rg. Piped or self-limiting forms (-c/-l/-q/-m N) pass; the redirect names no tool, since Grep is absent in some sessions",
       "pipeline": [
         { "stage": "has-pipe", "negate": true },
         { "stage": "command-prefix", "args": ["grep ", "rg "] },
-        { "stage": "redirect", "message": "Use the Grep tool instead", "tool": "Grep" }
+        { "stage": "command-regex", "negate": true, "patterns": [
+          "(^|\\s)-[A-Za-z]*[clq][A-Za-z]*(\\s|$)",
+          "(^|\\s)-m\\s*[0-9]+",
+          "(^|\\s)--(count|files-with-matches|files-without-match|quiet|silent|max-count)(\\s|=|$)"
+        ] },
+        { "stage": "deny", "message": "Unbounded grep floods context. Bound it (-c, -l, -m 20), pipe it (| head -50), or run it in the sandbox: ctx_execute(language: \"shell\", code: \"grep ...\"). Use the Grep tool if this session has one — do not assume it exists." }
       ]
     },
     {
-      "id": "block-find-no-pipe",
+      "id": "block-find-unbounded",
       "tool": "Bash",
-      "description": "Redirect find to Glob tool when not piped",
+      "description": "Block only unbounded find. Piped or depth-limited forms pass; the redirect names no tool, since Glob is absent in some sessions",
       "pipeline": [
         { "stage": "has-pipe", "negate": true },
         { "stage": "command-prefix", "args": ["find "] },
-        { "stage": "redirect", "message": "Use the Glob tool instead of find", "tool": "Glob" }
+        { "stage": "command-regex", "negate": true, "patterns": [
+          "(^|\\s)-maxdepth\\s+[0-9]+",
+          "(^|\\s)-quit(\\s|$)"
+        ] },
+        { "stage": "deny", "message": "Unbounded find floods context. Bound it (-maxdepth 3), pipe it (| head -50), or run it in the sandbox: ctx_execute(language: \"shell\", code: \"find ...\"). Use the Glob tool if this session has one — do not assume it exists." }
       ]
     },
     {
@@ -198,6 +220,33 @@
       "pipeline": [
         { "stage": "has-subshell" },
         { "stage": "all-parts-allowed", "prefixes": ["cd ", "skill ", "curl ", "git ", "kubectl ", "docker ", "jq ", "yq ", "cat ", "head ", "tail ", "grep ", "find ", "ls ", "tree ", "mkdir ", "cp ", "xargs ", "go ", "npm ", "python ", "ruff ", "golangci-lint ", "gcloud ", "ansible ", "a11s ", "./bin/a11s ", "hilo ", "mcpl ", "claude-hook-engine ", "echo ", "bun ", "semgrep "] }
+      ]
+    },
+    {
+      "id": "comment-cap-hash",
+      "description": "Cap consecutive # comment lines an Edit/Write is about to land (python, shell, yaml, hcl, dockerfiles)",
+      "pipeline": [
+        { "stage": "file-path-regex", "patterns": ["\\.(py|sh|bash|zsh|fish|ya?ml|tf|tfvars|hcl|toml|ini|cfg|conf|rb|pl|r|jl|nix|pp|sls)$", "(^|/)(Dockerfile|Containerfile|Makefile|Justfile|Vagrantfile|Gemfile|Rakefile|Brewfile)[.\\w-]*$"] },
+        { "stage": "comment-run", "max": 3, "fields": ["new_string", "content", "new_source"], "patterns": ["^\\s*#"], "exempt": ["^\\s*#!", "^\\s*#\\s*-\\*-", "(?i)^\\s*#\\s*(copyright|licen[cs]e|spdx-license-identifier|all rights reserved)"] },
+        { "stage": "deny", "message": "Comment block of {comment_run} lines exceeds the {comment_cap}-line cap in {file_path} (starts: {comment_block}). Keep only non-obvious intent, an invariant, or a gotcha, in {comment_cap} lines or fewer. A real exemption (file header, licence, user-requested commented-out config) belongs in this rule's exempt patterns — ask the user before adding one." }
+      ]
+    },
+    {
+      "id": "comment-cap-slash",
+      "description": "Cap consecutive // and /* */ comment lines an Edit/Write is about to land (go, js/ts, rust, c-family, hcl)",
+      "pipeline": [
+        { "stage": "file-path-regex", "patterns": ["\\.(go|js|jsx|ts|tsx|mjs|cjs|java|c|h|cc|cpp|hpp|cs|rs|swift|kt|kts|scala|php|proto|dart|zig|tf|tfvars|hcl|jsonc|css|scss|less)$"] },
+        { "stage": "comment-run", "max": 3, "fields": ["new_string", "content", "new_source"], "patterns": ["^\\s*//", "^\\s*/\\*", "^\\s*\\*(\\s|$|/)"], "exempt": ["^\\s*//\\s*Package\\s", "(?i)^\\s*(//|/\\*|\\*)\\s*(copyright|licen[cs]e|spdx-license-identifier|all rights reserved)"] },
+        { "stage": "deny", "message": "Comment block of {comment_run} lines exceeds the {comment_cap}-line cap in {file_path} (starts: {comment_block}). Keep only non-obvious intent, an invariant, or a gotcha, in {comment_cap} lines or fewer. A real exemption (package doc, licence, user-requested commented-out config) belongs in this rule's exempt patterns — ask the user before adding one." }
+      ]
+    },
+    {
+      "id": "comment-cap-dash",
+      "description": "Cap consecutive -- comment lines an Edit/Write is about to land (sql, lua, haskell)",
+      "pipeline": [
+        { "stage": "file-path-regex", "patterns": ["\\.(sql|lua|hs|elm|adb|ads)$"] },
+        { "stage": "comment-run", "max": 3, "fields": ["new_string", "content", "new_source"], "patterns": ["^\\s*--"], "exempt": ["(?i)^\\s*--\\s*(copyright|licen[cs]e|spdx-license-identifier|all rights reserved)"] },
+        { "stage": "deny", "message": "Comment block of {comment_run} lines exceeds the {comment_cap}-line cap in {file_path} (starts: {comment_block}). Keep only non-obvious intent, an invariant, or a gotcha, in {comment_cap} lines or fewer. A real exemption (licence, user-requested commented-out config) belongs in this rule's exempt patterns — ask the user before adding one." }
       ]
     }
   ],

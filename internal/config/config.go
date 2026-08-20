@@ -76,6 +76,11 @@ type StageConfig struct {
 	Command     string            `json:"command,omitempty" yaml:"command,omitempty"`
 	Verb        []string          `json:"verb,omitempty" yaml:"verb,omitempty"`
 	GlobalFlags map[string]string `json:"global-flags,omitempty" yaml:"global-flags,omitempty"`
+
+	// Edit/Write payload stage fields
+	Fields []string `json:"fields,omitempty" yaml:"fields,omitempty"`
+	Exempt []string `json:"exempt,omitempty" yaml:"exempt,omitempty"`
+	Max    int      `json:"max,omitempty" yaml:"max,omitempty"`
 }
 
 // Load reads and parses a rules config file. Supports JSON and YAML.

@@ -61,8 +61,24 @@ func (s *denyStage) Name() string             { return "deny" }
 func (s *denyStage) Type() pipeline.StageType { return pipeline.DeciderType }
 func (s *denyStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	ctx.Result.PermissionDecision = "deny"
-	ctx.Result.SystemMessage = s.message
+	ctx.Result.SystemMessage = expandBag(s.message, ctx.Bag)
 	return pipeline.Done, nil
+}
+
+// expandBag substitutes {key} in a message with the string value classifiers
+// left in the bag, so a denial can name what it actually found.
+func expandBag(msg string, bag map[string]any) string {
+	if !strings.Contains(msg, "{") {
+		return msg
+	}
+	for key, val := range bag {
+		s, ok := val.(string)
+		if !ok {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, "{"+key+"}", s)
+	}
+	return msg
 }
 
 // askStage defers the decision to the user.

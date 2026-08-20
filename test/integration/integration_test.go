@@ -249,3 +249,191 @@ func TestIntegrationPostNoRules(t *testing.T) {
 		t.Errorf("expected passthrough with no post rules, got: %s", output)
 	}
 }
+
+func TestIntegrationPreCommentCapPythonBlockDenied(t *testing.T) {
+	input := "{\"tool_name\": \"Edit\", \"tool_input\": {\"file_path\": \"/tmp/configure_vault.py\", \"new_string\": \"policy = 1\\n# one\\n# two\\n# three\\n# four\\n# five\\nx = 2\\n\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "\"permissionDecision\":\"deny\"") {
+		t.Errorf("expected deny, got: %s", output)
+	}
+	if !strings.Contains(output, "exceeds the 3-line cap") {
+		t.Errorf("expected the cap message, got: %s", output)
+	}
+}
+
+func TestIntegrationPreCommentCapMarkdownHeadingsAllowed(t *testing.T) {
+	input := "{\"tool_name\": \"Edit\", \"tool_input\": {\"file_path\": \"/tmp/notes.md\", \"new_string\": \"# One\\n# Two\\n# Three\\n# Four\\n# Five\\n\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough, got: %s", output)
+	}
+}
+
+func TestIntegrationPreCommentCapGoBlockDenied(t *testing.T) {
+	input := "{\"tool_name\": \"Edit\", \"tool_input\": {\"file_path\": \"/tmp/main.go\", \"new_string\": \"// one\\n// two\\n// three\\n// four\\nfunc f() {}\\n\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "\"permissionDecision\":\"deny\"") {
+		t.Errorf("expected deny, got: %s", output)
+	}
+	if !strings.Contains(output, "exceeds the 3-line cap") {
+		t.Errorf("expected the cap message, got: %s", output)
+	}
+}
+
+func TestIntegrationPreCommentCapShebangHeaderAllowed(t *testing.T) {
+	input := "{\"tool_name\": \"Write\", \"tool_input\": {\"file_path\": \"/tmp/run.sh\", \"content\": \"#!/usr/bin/env bash\\n# one\\n# two\\n# three\\n# four\\nrun\\n\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough, got: %s", output)
+	}
+}
+
+func TestIntegrationPreCommentCapHCLBlockDenied(t *testing.T) {
+	input := "{\"tool_name\": \"Write\", \"tool_input\": {\"file_path\": \"/tmp/policy.hcl\", \"content\": \"# one\\n# two\\n# three\\n# four\\npath \\\"x\\\" {}\\n\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "\"permissionDecision\":\"deny\"") {
+		t.Errorf("expected deny, got: %s", output)
+	}
+	if !strings.Contains(output, "exceeds the 3-line cap") {
+		t.Errorf("expected the cap message, got: %s", output)
+	}
+}
+
+func TestIntegrationPreCommentCapSQLBlockDenied(t *testing.T) {
+	input := "{\"tool_name\": \"Edit\", \"tool_input\": {\"file_path\": \"/tmp/q.sql\", \"new_string\": \"-- one\\n-- two\\n-- three\\n-- four\\nSELECT 1;\\n\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "\"permissionDecision\":\"deny\"") {
+		t.Errorf("expected deny, got: %s", output)
+	}
+	if !strings.Contains(output, "exceeds the 3-line cap") {
+		t.Errorf("expected the cap message, got: %s", output)
+	}
+}
+
+func TestIntegrationPreCommentCapAtCapAllowed(t *testing.T) {
+	input := "{\"tool_name\": \"Edit\", \"tool_input\": {\"file_path\": \"/tmp/a.py\", \"new_string\": \"# one\\n# two\\n# three\\ncode()\\n\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough, got: %s", output)
+	}
+}
+
+func TestIntegrationPreGrepBoundedPasses(t *testing.T) {
+	input := "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"grep -rl 'needle' .\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected bounded search to pass, got: %s", output)
+	}
+}
+
+func TestIntegrationPreGrepMaxCountPasses(t *testing.T) {
+	input := "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"grep -rn -m 20 foo .\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected bounded search to pass, got: %s", output)
+	}
+}
+
+func TestIntegrationPreGrepUnboundedDenied(t *testing.T) {
+	input := "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"grep -rn 'needle' .\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "\"permissionDecision\":\"deny\"") {
+		t.Errorf("expected deny for unbounded search, got: %s", output)
+	}
+}
+
+func TestIntegrationPreFindMaxdepthPasses(t *testing.T) {
+	input := "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"find . -maxdepth 3 -name '*.go'\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected bounded search to pass, got: %s", output)
+	}
+}
+
+func TestIntegrationPreFindUnboundedDenied(t *testing.T) {
+	input := "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"find . -name '*.go'\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "\"permissionDecision\":\"deny\"") {
+		t.Errorf("expected deny for unbounded search, got: %s", output)
+	}
+}
+
+func TestIntegrationPreFindDeleteAsks(t *testing.T) {
+	input := "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"find . -name '*.tmp' -delete\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "\"permissionDecision\":\"ask\"") {
+		t.Errorf("expected ask, got: %s", output)
+	}
+}
+
+func TestIntegrationPreFindExecRmAsks(t *testing.T) {
+	input := "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"find . -name x -exec rm {} ;\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "\"permissionDecision\":\"ask\"") {
+		t.Errorf("expected ask, got: %s", output)
+	}
+}
+
+func TestIntegrationPreFindExecGrepPasses(t *testing.T) {
+	input := "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"find . -maxdepth 2 -exec grep -l foo {} +\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough, got: %s", output)
+	}
+}
+
+func TestIntegrationPreFindNamedDeleteMePasses(t *testing.T) {
+	input := "{\"tool_name\": \"Bash\", \"tool_input\": {\"command\": \"find . -maxdepth 2 -name 'delete-me'\"}}"
+	output, err := runPreWithRules(input, productionRulesPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != "" {
+		t.Errorf("expected passthrough, got: %s", output)
+	}
+}
