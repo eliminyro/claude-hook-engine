@@ -214,6 +214,16 @@
       ]
     },
     {
+      "id": "docker-non-readonly-ask",
+      "tool": "Bash",
+      "description": "Default-ask for docker/podman: settings.json allows `docker *` broadly, this rule takes it back. The whitelist keeps the pre-existing allow set — read-only verbs (ps/inspect/logs/images/stats + network|volume|image|container|system|context|compose sub-verbs) plus run/build/exec — with --context/-H global flags and a pipe tail into filters; rm/rmi/prune/cp/push/pull/login/save/load/compose up/network create/volume rm/context use fall through to a prompt. Anchored ^...$ and separator-free on purpose — a chain or subshell can't smuggle a second call past an allowed prefix. Placed before subshell-allow so its `docker ` prefix can't auto-approve one either. Args must be space-separated from the verb so `build` can't swallow `buildx bake`.",
+      "pipeline": [
+        { "stage": "has-command", "args": ["docker", "podman"] },
+        { "stage": "command-regex", "negate": true, "patterns": ["^\\s*(docker|podman)\\s+((--context|-c|-H|--host|--log-level|-l)(\\s+|=)\\S+\\s+|--tls\\S*\\s+|--debug\\s+|-D\\s+)*(ps|images|inspect|logs|top|port|stats|version|info|df|history|diff|search|run|build|exec|container\\s+(ls|ps|inspect|logs|top|port|stats|diff|run|exec)|image\\s+(ls|inspect|history|build)|network\\s+(ls|inspect)|volume\\s+(ls|inspect)|system\\s+(df|info)|context\\s+(ls|inspect|show)|buildx\\s+ls|compose\\s+((-f|--file|-p|--project-name)\\s+\\S+\\s+)*(ps|ls|config|logs|top|images|version))(\\s[^;&|<>$`()]*)?(\\|\\s*(grep|egrep|rg|head|tail|wc|jq|yq|awk|sort|uniq|column|cut|tr|less|cat|xargs)[^;&|<>$`()]*)*$"] },
+        { "stage": "ask" }
+      ]
+    },
+    {
       "id": "subshell-allow",
       "tool": "Bash",
       "description": "Allow subshells when all parts are permitted",
