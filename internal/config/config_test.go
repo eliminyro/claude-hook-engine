@@ -18,6 +18,38 @@ func writeTestConfig(t *testing.T, content string) string {
 	return path
 }
 
+func TestLoadMemoryMCPPrompts(t *testing.T) {
+	path := writeTestConfig(t, `{
+		"version": 2,
+		"memory_mcp": {
+			"url": "https://mcp.example/mcp",
+			"api_key": "literal://tok",
+			"cache_dir": "~/.claude/cache/prompts",
+			"authority": "AUTH",
+			"prompts": [
+				{"path": "prompts/derpy/root", "paths": ["/a"], "scope": ["a11s/platform"]}
+			]
+		}
+	}`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	mc := cfg.MemoryMCP
+	if mc.URL != "https://mcp.example/mcp" || mc.APIKey != "literal://tok" ||
+		mc.CacheDir != "~/.claude/cache/prompts" || mc.Authority != "AUTH" {
+		t.Errorf("memory_mcp scalar fields wrong: %+v", mc)
+	}
+	if len(mc.Prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d", len(mc.Prompts))
+	}
+	p := mc.Prompts[0]
+	if p.Path != "prompts/derpy/root" || len(p.Paths) != 1 || p.Paths[0] != "/a" ||
+		len(p.Scope) != 1 || p.Scope[0] != "a11s/platform" {
+		t.Errorf("prompt entry wrong: %+v", p)
+	}
+}
+
 func TestLoadValidConfig(t *testing.T) {
 	path := writeTestConfig(t, `{
 		"version": 1,

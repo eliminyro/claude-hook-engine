@@ -3,6 +3,8 @@ package hook
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,6 +58,38 @@ func HandleSessionStart(r io.Reader, rulesPath string) (string, error) {
 		contextParts = append(contextParts, formatIndexHint(raw))
 	}
 
+	// Assemble configured prompts (opt-in), prepended so they lead the context.
+	// Missing config is a hard error; a runtime fetch failure falls back to cache.
+	if len(cfg.MemoryMCP.Prompts) > 0 {
+		mc := cfg.MemoryMCP
+		if mc.URL == "" || mc.APIKey == "" || mc.CacheDir == "" {
+			return "", fmt.Errorf("session-start: memory_mcp.prompts requires url, api_key, and cache_dir")
+		}
+		var prompts []string
+		for _, entry := range mc.Prompts {
+			if !promptMatches(inp.CWD, entry.Paths) {
+				continue
+			}
+			cachePath := promptCachePath(mc.CacheDir, entry)
+			blob := fetchPrompt(mc.URL, mc.APIKey, entry)
+			if blob != "" {
+				writePromptCache(cachePath, blob)
+			} else {
+				blob = readPromptCache(cachePath)
+			}
+			if blob != "" {
+				prompts = append(prompts, blob)
+			}
+		}
+		if len(prompts) > 0 {
+			block := strings.Join(prompts, "\n\n")
+			if mc.Authority != "" {
+				block = mc.Authority + "\n\n" + block
+			}
+			contextParts = append([]string{block}, contextParts...)
+		}
+	}
+
 	if len(contextParts) == 0 {
 		return "", nil
 	}
@@ -105,7 +139,9 @@ func buildProjectHint(name string, proj config.ProjectConfig) string {
 	return strings.Join(parts, ". ")
 }
 
-func fetchIndex(url, apiKey string) string {
+// callTool invokes one memory-mcp tool over HTTP and returns result.content[0].text.
+// Any error yields "" — a fetch is best-effort and never fails session start.
+func callTool(url, apiKey, name string, args map[string]any) string {
 	if url == "" || apiKey == "" {
 		return ""
 	}
@@ -113,10 +149,18 @@ func fetchIndex(url, apiKey string) string {
 	if resolvedKey == "" {
 		return ""
 	}
-	reqBody := `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"generate_index","arguments":{"depth":"summary"}},"id":1}`
+	reqBody, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "tools/call",
+		"id":      1,
+		"params":  map[string]any{"name": name, "arguments": args},
+	})
+	if err != nil {
+		return ""
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBufferString(reqBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
 		return ""
 	}
@@ -127,22 +171,19 @@ func fetchIndex(url, apiKey string) string {
 	if err != nil {
 		return ""
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return ""
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	// 1 MB cap: an assembled prompt (root + includes) is far larger than an index.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return ""
 	}
-
-	// MCP StreamableHTTPHandler returns SSE: "event: message\ndata: {...}\n\n"
-	// Extract the JSON from the "data:" line.
 	jsonData := extractSSEData(body)
 	if jsonData == nil {
 		return ""
 	}
-
 	var rpcResp struct {
 		Result *struct {
 			Content []struct {
@@ -157,6 +198,136 @@ func fetchIndex(url, apiKey string) string {
 		return ""
 	}
 	return rpcResp.Result.Content[0].Text
+}
+
+func fetchIndex(url, apiKey string) string {
+	return callTool(url, apiKey, "generate_index", map[string]any{"depth": "summary"})
+}
+
+// fetchPrompt assembles one configured prompt: get_document with includes
+// expanded, then the root sections followed by each include's sections. Returns
+// "" on any fetch/parse failure so the caller can fall back to cache.
+func fetchPrompt(url, apiKey string, entry config.PromptConfig) string {
+	category, subcategory, slug := splitPromptPath(entry.Path)
+	if category == "" || slug == "" {
+		return ""
+	}
+	args := map[string]any{
+		"category": category,
+		"slug":     slug,
+		"expand":   true,
+		"scope":    strings.Join(entry.Scope, " "),
+	}
+	if subcategory != "" {
+		args["subcategory"] = subcategory
+	}
+	return assemblePrompt(callTool(url, apiKey, "get_document", args))
+}
+
+// splitPromptPath splits "category/subcategory/slug": first segment is the
+// category, last the slug, the middle (if any) joins into a subcategory path.
+func splitPromptPath(path string) (category, subcategory, slug string) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 2 {
+		return "", "", ""
+	}
+	category = parts[0]
+	slug = parts[len(parts)-1]
+	if len(parts) > 2 {
+		subcategory = strings.Join(parts[1:len(parts)-1], "/")
+	}
+	return category, subcategory, slug
+}
+
+// assemblePrompt concatenates a get_document(expand) DocumentView: the root's
+// section content, then each resolved include's, in returned order.
+func assemblePrompt(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	type section struct {
+		Content string `json:"content"`
+	}
+	type doc struct {
+		Sections []section `json:"sections"`
+		Includes []struct {
+			Sections []section `json:"sections"`
+		} `json:"includes"`
+	}
+	var d doc
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		return ""
+	}
+	var parts []string
+	add := func(secs []section) {
+		for _, s := range secs {
+			if strings.TrimSpace(s.Content) != "" {
+				parts = append(parts, s.Content)
+			}
+		}
+	}
+	add(d.Sections)
+	for _, inc := range d.Includes {
+		add(inc.Sections)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// promptMatches reports whether cwd satisfies an entry's cwd gate (empty = always).
+func promptMatches(cwd string, paths []string) bool {
+	if len(paths) == 0 {
+		return true
+	}
+	for _, p := range paths {
+		if matchesPath(cwd, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// promptCachePath is the per-entry cache file, keyed by path+scope so a re-scoped
+// prompt caches separately. Returns "" when cacheDir is unset or unresolvable.
+func promptCachePath(cacheDir string, entry config.PromptConfig) string {
+	dir := expandHome(cacheDir)
+	if dir == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(entry.Path + "\x00" + strings.Join(entry.Scope, " ")))
+	return filepath.Join(dir, hex.EncodeToString(sum[:8])+".md")
+}
+
+func writePromptCache(path, content string) {
+	if path == "" || content == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(path, []byte(content), 0o644)
+}
+
+func readPromptCache(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// expandHome resolves a leading "~" to the user's home directory.
+func expandHome(p string) string {
+	if p == "" || !strings.HasPrefix(p, "~") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home + p[1:]
 }
 
 // extractSSEData extracts the JSON payload from an SSE response.

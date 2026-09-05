@@ -35,10 +35,23 @@ type ProjectConfig struct {
 	Description string   `json:"description" yaml:"description"` // Short description for context hint
 }
 
-// MemoryMCPConfig holds connection details for the memory-mcp server.
+// MemoryMCPConfig holds memory-mcp connection details plus the SessionStart
+// prompt-injection config (prompts assembled from memory).
 type MemoryMCPConfig struct {
-	URL    string `json:"url" yaml:"url"`
-	APIKey string `json:"api_key" yaml:"api_key"`
+	URL       string         `json:"url" yaml:"url"`
+	APIKey    string         `json:"api_key" yaml:"api_key"`
+	Prompts   []PromptConfig `json:"prompts" yaml:"prompts"`
+	Authority string         `json:"authority" yaml:"authority"`
+	CacheDir  string         `json:"cache_dir" yaml:"cache_dir"`
+}
+
+// PromptConfig is one prompt document assembled and injected at session start:
+// Path is category/subcategory/slug in memory; Paths gates by cwd (empty = always);
+// Scope tokens gate the document's conditional includes.
+type PromptConfig struct {
+	Path  string   `json:"path" yaml:"path"`
+	Paths []string `json:"paths" yaml:"paths"`
+	Scope []string `json:"scope" yaml:"scope"`
 }
 
 type ProviderConfig struct {
@@ -194,9 +207,6 @@ func applyDefaults(cfg *Config) {
 	// Exec defaults
 	if cfg.Exec.RewritePrefix == "" {
 		cfg.Exec.RewritePrefix = pipeline.DefaultExec().RewritePrefix
-	}
-	if cfg.MemoryMCP.URL == "" {
-		cfg.MemoryMCP.URL = "https://memory-mcp.a11s.dev/mcp"
 	}
 }
 
