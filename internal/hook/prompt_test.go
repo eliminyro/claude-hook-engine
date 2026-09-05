@@ -36,6 +36,15 @@ func TestAssemblePrompt(t *testing.T) {
 	if got != want {
 		t.Errorf("assemblePrompt = %q, want %q", got, want)
 	}
+
+	// Title and headings are reconstructed as markdown, root then includes.
+	structured := `{"title":"root","sections":[{"heading":"H","content":"body"}],"includes":[{"title":"persona","sections":[{"content":"pre"},{"heading":"Core","content":"c1"}]}]}`
+	got = assemblePrompt(structured)
+	want = "# root\n\n## H\n\nbody\n\n# persona\n\npre\n\n## Core\n\nc1"
+	if got != want {
+		t.Errorf("assemblePrompt(structured) = %q, want %q", got, want)
+	}
+
 	if assemblePrompt("") != "" || assemblePrompt("not json") != "" {
 		t.Error("assemblePrompt should return empty on empty/invalid input")
 	}

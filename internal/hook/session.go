@@ -239,38 +239,46 @@ func splitPromptPath(path string) (category, subcategory, slug string) {
 	return category, subcategory, slug
 }
 
-// assemblePrompt concatenates a get_document(expand) DocumentView: the root's
-// section content, then each resolved include's, in returned order.
+// assemblePrompt reconstructs a get_document(expand) DocumentView into markdown:
+// the root then each resolved include, each rendered as its "# title" and
+// "## heading" sections in order, so the stored structure survives reassembly.
 func assemblePrompt(raw string) string {
 	if raw == "" {
 		return ""
 	}
 	type section struct {
-		Content string `json:"content"`
+		Heading *string `json:"heading"`
+		Content string  `json:"content"`
 	}
 	type doc struct {
+		Title    string    `json:"title"`
 		Sections []section `json:"sections"`
-		Includes []struct {
-			Sections []section `json:"sections"`
-		} `json:"includes"`
+		Includes []doc     `json:"includes"`
 	}
 	var d doc
 	if err := json.Unmarshal([]byte(raw), &d); err != nil {
 		return ""
 	}
-	var parts []string
-	add := func(secs []section) {
-		for _, s := range secs {
+	var b strings.Builder
+	render := func(dc doc) {
+		if dc.Title != "" {
+			fmt.Fprintf(&b, "# %s\n\n", dc.Title)
+		}
+		for _, s := range dc.Sections {
+			if s.Heading != nil && *s.Heading != "" {
+				fmt.Fprintf(&b, "## %s\n\n", *s.Heading)
+			}
 			if strings.TrimSpace(s.Content) != "" {
-				parts = append(parts, s.Content)
+				b.WriteString(s.Content)
+				b.WriteString("\n\n")
 			}
 		}
 	}
-	add(d.Sections)
+	render(d)
 	for _, inc := range d.Includes {
-		add(inc.Sections)
+		render(inc)
 	}
-	return strings.Join(parts, "\n\n")
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // promptMatches reports whether cwd satisfies an entry's cwd gate (empty = always).
