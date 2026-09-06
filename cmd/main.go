@@ -36,9 +36,13 @@ func main() {
 	}
 }
 
-// rulesPath returns the base path for rules config (without extension).
-// config.Load will try .json, .yaml, .yml automatically.
+// rulesPath returns the config base path (extensionless; Load tries .json/.yaml/.yml).
+// CLAUDE_HOOK_ENGINE_RULES overrides it per-process for every subcommand, letting a
+// subprocess use an alternate config without touching the installed ~/.claude/hooks/rules.
 func rulesPath() string {
+	if p := os.Getenv("CLAUDE_HOOK_ENGINE_RULES"); p != "" {
+		return p
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
