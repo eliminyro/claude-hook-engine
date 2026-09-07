@@ -45,13 +45,15 @@ type MemoryMCPConfig struct {
 	CacheDir  string         `json:"cache_dir" yaml:"cache_dir"`
 }
 
-// PromptConfig is one prompt document assembled and injected at session start:
-// Path is category/subcategory/slug in memory; Paths gates by cwd (empty = always);
-// Scope tokens gate the document's conditional includes.
+// PromptConfig is one prompt document assembled and injected at session start.
+// Path is category/subcategory/slug in memory; an empty LayersDir keeps the
+// legacy inline injection, which the hook output size limit truncates.
 type PromptConfig struct {
-	Path  string   `json:"path" yaml:"path"`
-	Paths []string `json:"paths" yaml:"paths"`
-	Scope []string `json:"scope" yaml:"scope"`
+	Path      string   `json:"path" yaml:"path"`
+	Paths     []string `json:"paths" yaml:"paths"`           // cwd gate; empty = always
+	Scope     []string `json:"scope" yaml:"scope"`           // gates the document's conditional includes
+	LayersDir string   `json:"layers_dir" yaml:"layers_dir"` // one file per layer, @-imported instead of injected
+	ImportsIn string   `json:"imports_in" yaml:"imports_in"` // file whose managed block holds the @-imports
 }
 
 type ProviderConfig struct {

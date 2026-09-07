@@ -65,20 +65,36 @@ func HandleSessionStart(r io.Reader, rulesPath string) (string, error) {
 		if mc.URL == "" || mc.APIKey == "" || mc.CacheDir == "" {
 			return "", fmt.Errorf("session-start: memory_mcp.prompts requires url, api_key, and cache_dir")
 		}
-		var prompts []string
+		var prompts, notices []string
 		for _, entry := range mc.Prompts {
 			if !promptMatches(inp.CWD, entry.Paths) {
 				continue
 			}
 			cachePath := promptCachePath(mc.CacheDir, entry)
-			blob := fetchPrompt(mc.URL, mc.APIKey, entry)
-			if blob != "" {
-				writePromptCache(cachePath, blob)
-			} else {
-				blob = readPromptCache(cachePath)
+			pd := fetchPromptDoc(mc.URL, mc.APIKey, entry)
+			if pd != nil && pd.Assembled != "" {
+				writePromptCache(cachePath, pd.Assembled)
 			}
-			if blob != "" {
-				prompts = append(prompts, blob)
+			// A failed fetch must not touch the layer files or the import block:
+			// what is on disk is the last good resolution, already imported.
+			if entry.LayersDir == "" {
+				blob := ""
+				if pd != nil {
+					blob = pd.Assembled
+				}
+				if blob == "" {
+					blob = readPromptCache(cachePath)
+				}
+				if blob != "" {
+					prompts = append(prompts, blob)
+				}
+				continue
+			}
+			if pd == nil || len(pd.Layers) == 0 {
+				continue
+			}
+			if notice := syncPromptLayers(entry, mc.Authority, pd); notice != "" {
+				notices = append(notices, notice)
 			}
 		}
 		if len(prompts) > 0 {
@@ -87,6 +103,11 @@ func HandleSessionStart(r io.Reader, rulesPath string) (string, error) {
 				block = mc.Authority + "\n\n" + block
 			}
 			contextParts = append([]string{block}, contextParts...)
+		}
+		// Drift notices lead everything: the hook output size limit truncates the
+		// tail, and an unread notice is a silently stale prompt.
+		if len(notices) > 0 {
+			contextParts = append(notices, contextParts...)
 		}
 	}
 
@@ -204,13 +225,13 @@ func fetchIndex(url, apiKey string) string {
 	return callTool(url, apiKey, "generate_index", map[string]any{"depth": "summary"})
 }
 
-// fetchPrompt assembles one configured prompt: get_document with includes
-// expanded, then the root sections followed by each include's sections. Returns
-// "" on any fetch/parse failure so the caller can fall back to cache.
-func fetchPrompt(url, apiKey string, entry config.PromptConfig) string {
+// fetchPromptDoc resolves one configured prompt: get_document with includes
+// expanded, split into layers. Nil on any fetch/parse failure so the caller can
+// fall back to cache and leave on-disk layers untouched.
+func fetchPromptDoc(url, apiKey string, entry config.PromptConfig) *promptDoc {
 	category, subcategory, slug := splitPromptPath(entry.Path)
 	if category == "" || slug == "" {
-		return ""
+		return nil
 	}
 	args := map[string]any{
 		"category": category,
@@ -221,7 +242,7 @@ func fetchPrompt(url, apiKey string, entry config.PromptConfig) string {
 	if subcategory != "" {
 		args["subcategory"] = subcategory
 	}
-	return assemblePrompt(callTool(url, apiKey, "get_document", args))
+	return parsePromptDoc(callTool(url, apiKey, "get_document", args))
 }
 
 // splitPromptPath splits "category/subcategory/slug": first segment is the
@@ -239,46 +260,14 @@ func splitPromptPath(path string) (category, subcategory, slug string) {
 	return category, subcategory, slug
 }
 
-// assemblePrompt reconstructs a get_document(expand) DocumentView into markdown:
-// the root then each resolved include, each rendered as its "# title" and
-// "## heading" sections in order, so the stored structure survives reassembly.
+// assemblePrompt renders a get_document(expand) DocumentView as the single
+// markdown blob used for the cache and for inline injection.
 func assemblePrompt(raw string) string {
-	if raw == "" {
+	pd := parsePromptDoc(raw)
+	if pd == nil {
 		return ""
 	}
-	type section struct {
-		Heading *string `json:"heading"`
-		Content string  `json:"content"`
-	}
-	type doc struct {
-		Title    string    `json:"title"`
-		Sections []section `json:"sections"`
-		Includes []doc     `json:"includes"`
-	}
-	var d doc
-	if err := json.Unmarshal([]byte(raw), &d); err != nil {
-		return ""
-	}
-	var b strings.Builder
-	render := func(dc doc) {
-		if dc.Title != "" {
-			fmt.Fprintf(&b, "# %s\n\n", dc.Title)
-		}
-		for _, s := range dc.Sections {
-			if s.Heading != nil && *s.Heading != "" {
-				fmt.Fprintf(&b, "## %s\n\n", *s.Heading)
-			}
-			if strings.TrimSpace(s.Content) != "" {
-				b.WriteString(s.Content)
-				b.WriteString("\n\n")
-			}
-		}
-	}
-	render(d)
-	for _, inc := range d.Includes {
-		render(inc)
-	}
-	return strings.TrimRight(b.String(), "\n")
+	return pd.Assembled
 }
 
 // promptMatches reports whether cwd satisfies an entry's cwd gate (empty = always).
@@ -388,22 +377,36 @@ func resolveSimpleSecret(uri string) string {
 
 func formatIndexHint(rawJSON string) string {
 	var entries []struct {
+		TenantName  string  `json:"tenant_name"`
 		Category    string  `json:"category"`
 		Subcategory *string `json:"subcategory,omitempty"`
 		DocCount    int     `json:"doc_count"`
-		Topics      string  `json:"topics"`
 	}
 	if err := json.Unmarshal([]byte(rawJSON), &entries); err != nil {
 		return "## Knowledge Base Index\n" + rawJSON
 	}
+	// Tenants are only named when more than one is readable: the same path in two
+	// tenants otherwise renders as an unexplained duplicate row.
+	tenants := map[string]bool{}
+	for _, e := range entries {
+		tenants[e.TenantName] = true
+	}
 	var b strings.Builder
+	// Paths and counts only: the per-doc titles run ~9 KB, which the 2000-byte
+	// hook output preview truncates to the first three categories. Titles come
+	// from generate_index(category=...) on demand instead.
 	b.WriteString("## Knowledge Base Index\n")
+	b.WriteString("Document titles: `generate_index(category=\"<category>\")`.\n")
 	for _, e := range entries {
 		path := e.Category
 		if e.Subcategory != nil {
 			path += "/" + *e.Subcategory
 		}
-		fmt.Fprintf(&b, "%s (%d docs) — %s\n", path, e.DocCount, e.Topics)
+		if len(tenants) > 1 && e.TenantName != "" {
+			fmt.Fprintf(&b, "%s (%d docs) [%s]\n", path, e.DocCount, e.TenantName)
+			continue
+		}
+		fmt.Fprintf(&b, "%s (%d docs)\n", path, e.DocCount)
 	}
 	return b.String()
 }
