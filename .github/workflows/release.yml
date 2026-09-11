@@ -1,0 +1,50 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+
+      - uses: actions/setup-go@v6.5.0
+        with:
+          go-version-file: go.mod
+
+      # A tag on a broken tree must not produce a release.
+      - name: Build and test
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: Cross-build stamped binaries
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          for platform in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${platform%/*}"
+            arch="${platform#*/}"
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build \
+              -trimpath \
+              -ldflags "-s -w -X main.version=${TAG}" \
+              -o "dist/claude-hook-engine_${os}_${arch}" \
+              ./cmd
+          done
+
+      - name: Checksums
+        run: cd dist && sha256sum claude-hook-engine_* > checksums.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" dist/* --title "$TAG" --generate-notes

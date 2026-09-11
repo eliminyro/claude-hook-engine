@@ -8,13 +8,21 @@ import (
 	"github.com/eliminyro/claude-hook-engine/internal/hook"
 )
 
+// version is the release tag, stamped at link time with
+// -ldflags "-X main.version=<tag>". The default marks a non-release build.
+var version = "dev"
+
 func main() {
+	hook.Version = version
+
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: claude-hook-engine <pre|post|session-start> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: claude-hook-engine <pre|post|session-start|version> [args...]")
 		os.Exit(1)
 	}
 
 	switch os.Args[1] {
+	case "version":
+		fmt.Println(version)
 	case "pre":
 		if err := runPre(); err != nil {
 			fmt.Fprintln(os.Stderr, err)

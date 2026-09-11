@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,6 +27,42 @@ type Config struct {
 	Post               []Rule                             `json:"post" yaml:"post"`
 	Projects           map[string]ProjectConfig           `json:"projects" yaml:"projects"`
 	MemoryMCP          MemoryMCPConfig                    `json:"memory_mcp" yaml:"memory_mcp"`
+	SelfUpdate         SelfUpdateConfig                   `json:"self_update" yaml:"self_update"`
+}
+
+// SelfUpdateConfig points the updater at a GitHub repository's releases and at
+// the binary they replace. An absent block leaves the feature entirely off.
+type SelfUpdateConfig struct {
+	Repo          string `json:"repo" yaml:"repo"`                       // owner/name
+	BinaryPath    string `json:"binary_path" yaml:"binary_path"`         // the installed binary to replace
+	StateDir      string `json:"state_dir" yaml:"state_dir"`             // holds the throttle stamp file
+	CheckInterval string `json:"check_interval" yaml:"check_interval"`   // duration; 24h when unset
+	MinReleaseAge string `json:"min_release_age" yaml:"min_release_age"` // duration; 3h when unset
+}
+
+const (
+	defaultCheckInterval = 24 * time.Hour
+	defaultMinReleaseAge = 3 * time.Hour
+)
+
+// Interval is the configured check interval, falling back to the default when
+// unset or unparsable — a typo must not turn into a check on every session.
+func (s SelfUpdateConfig) Interval() time.Duration {
+	return durationOr(s.CheckInterval, defaultCheckInterval)
+}
+
+// MinAge is how long a release must have been published before it is eligible,
+// defaulted the same way as Interval — a typo must not disarm the delay.
+func (s SelfUpdateConfig) MinAge() time.Duration {
+	return durationOr(s.MinReleaseAge, defaultMinReleaseAge)
+}
+
+func durationOr(s string, fallback time.Duration) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
 }
 
 // ProjectConfig maps directory patterns to project metadata for auto-context.

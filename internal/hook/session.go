@@ -56,6 +56,8 @@ func HandleSessionStart(r io.Reader, rulesPath string) (string, error) {
 		contextParts = append(contextParts, formatIndexHint(raw))
 	}
 
+	var notices []string
+
 	// Configured prompts (opt-in) are delivered as @-imported layer files; only
 	// the report of what changed goes into additionalContext.
 	if len(cfg.MemoryMCP.Prompts) > 0 {
@@ -63,7 +65,6 @@ func HandleSessionStart(r io.Reader, rulesPath string) (string, error) {
 		if err := requirePromptConfig(mc); err != nil {
 			return "", fmt.Errorf("session-start: %w", err)
 		}
-		var notices []string
 		for _, entry := range mc.Prompts {
 			if !promptMatches(inp.CWD, entry.Paths) {
 				continue
@@ -76,11 +77,17 @@ func HandleSessionStart(r io.Reader, rulesPath string) (string, error) {
 			}
 			notices = append(notices, syncPromptLayers(entry, mc.Authority, pd)...)
 		}
-		// Drift notices lead everything: the hook output size limit truncates the
-		// tail, and an unread notice is a silently stale prompt.
-		if len(notices) > 0 {
-			contextParts = append(notices, contextParts...)
-		}
+	}
+
+	// Self-update is silent unless it actually installed something.
+	if line := selfUpdate(cfg.SelfUpdate, Version); line != "" {
+		notices = append(notices, line)
+	}
+
+	// Drift notices lead everything: the hook output size limit truncates the
+	// tail, and an unread notice is a silently stale prompt.
+	if len(notices) > 0 {
+		contextParts = append(notices, contextParts...)
 	}
 
 	if len(contextParts) == 0 {
