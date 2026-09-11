@@ -3,8 +3,6 @@ package hook
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -58,51 +56,25 @@ func HandleSessionStart(r io.Reader, rulesPath string) (string, error) {
 		contextParts = append(contextParts, formatIndexHint(raw))
 	}
 
-	// Assemble configured prompts (opt-in), prepended so they lead the context.
-	// Missing config is a hard error; a runtime fetch failure falls back to cache.
+	// Configured prompts (opt-in) are delivered as @-imported layer files; only
+	// the report of what changed goes into additionalContext.
 	if len(cfg.MemoryMCP.Prompts) > 0 {
 		mc := cfg.MemoryMCP
-		if mc.URL == "" || mc.APIKey == "" || mc.CacheDir == "" {
-			return "", fmt.Errorf("session-start: memory_mcp.prompts requires url, api_key, and cache_dir")
+		if err := requirePromptConfig(mc); err != nil {
+			return "", fmt.Errorf("session-start: %w", err)
 		}
-		var prompts, notices []string
+		var notices []string
 		for _, entry := range mc.Prompts {
 			if !promptMatches(inp.CWD, entry.Paths) {
 				continue
 			}
-			cachePath := promptCachePath(mc.CacheDir, entry)
 			pd := fetchPromptDoc(mc.URL, mc.APIKey, entry)
-			if pd != nil && pd.Assembled != "" {
-				writePromptCache(cachePath, pd.Assembled)
-			}
-			// A failed fetch must not touch the layer files or the import block:
-			// what is on disk is the last good resolution, already imported.
-			if entry.LayersDir == "" {
-				blob := ""
-				if pd != nil {
-					blob = pd.Assembled
-				}
-				if blob == "" {
-					blob = readPromptCache(cachePath)
-				}
-				if blob != "" {
-					prompts = append(prompts, blob)
-				}
-				continue
-			}
+			// A failed fetch means "no information", never "no layers": what is
+			// on disk is the last good resolution and stays exactly as it is.
 			if pd == nil || len(pd.Layers) == 0 {
 				continue
 			}
-			if notice := syncPromptLayers(entry, mc.Authority, pd); notice != "" {
-				notices = append(notices, notice)
-			}
-		}
-		if len(prompts) > 0 {
-			block := strings.Join(prompts, "\n\n")
-			if mc.Authority != "" {
-				block = mc.Authority + "\n\n" + block
-			}
-			contextParts = append([]string{block}, contextParts...)
+			notices = append(notices, syncPromptLayers(entry, mc.Authority, pd)...)
 		}
 		// Drift notices lead everything: the hook output size limit truncates the
 		// tail, and an unread notice is a silently stale prompt.
@@ -226,8 +198,8 @@ func fetchIndex(url, apiKey string) string {
 }
 
 // fetchPromptDoc resolves one configured prompt: get_document with includes
-// expanded, split into layers. Nil on any fetch/parse failure so the caller can
-// fall back to cache and leave on-disk layers untouched.
+// expanded, split into layers. Nil on any fetch or parse failure, which the
+// caller must read as "no information" and leave the on-disk layers alone.
 func fetchPromptDoc(url, apiKey string, entry config.PromptConfig) *promptDoc {
 	category, subcategory, slug := splitPromptPath(entry.Path)
 	if category == "" || slug == "" {
@@ -260,14 +232,32 @@ func splitPromptPath(path string) (category, subcategory, slug string) {
 	return category, subcategory, slug
 }
 
-// assemblePrompt renders a get_document(expand) DocumentView as the single
-// markdown blob used for the cache and for inline injection.
-func assemblePrompt(raw string) string {
-	pd := parsePromptDoc(raw)
-	if pd == nil {
-		return ""
+// requirePromptConfig checks what delivery needs: connection and destination
+// come from config, never from a compiled-in default. Names every missing key.
+func requirePromptConfig(mc config.MemoryMCPConfig) error {
+	var missing []string
+	if mc.URL == "" {
+		missing = append(missing, "memory_mcp.url")
 	}
-	return pd.Assembled
+	if mc.APIKey == "" {
+		missing = append(missing, "memory_mcp.api_key")
+	}
+	for i, entry := range mc.Prompts {
+		name := entry.Path
+		if name == "" {
+			name = fmt.Sprintf("#%d", i)
+		}
+		if entry.LayersDir == "" {
+			missing = append(missing, fmt.Sprintf("prompts[%s].layers_dir", name))
+		}
+		if entry.ImportsIn == "" {
+			missing = append(missing, fmt.Sprintf("prompts[%s].imports_in", name))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("memory_mcp.prompts requires %s", strings.Join(missing, ", "))
 }
 
 // promptMatches reports whether cwd satisfies an entry's cwd gate (empty = always).
@@ -281,38 +271,6 @@ func promptMatches(cwd string, paths []string) bool {
 		}
 	}
 	return false
-}
-
-// promptCachePath is the per-entry cache file, keyed by path+scope so a re-scoped
-// prompt caches separately. Returns "" when cacheDir is unset or unresolvable.
-func promptCachePath(cacheDir string, entry config.PromptConfig) string {
-	dir := expandHome(cacheDir)
-	if dir == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(entry.Path + "\x00" + strings.Join(entry.Scope, " ")))
-	return filepath.Join(dir, hex.EncodeToString(sum[:8])+".md")
-}
-
-func writePromptCache(path, content string) {
-	if path == "" || content == "" {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(path, []byte(content), 0o644)
-}
-
-func readPromptCache(path string) string {
-	if path == "" {
-		return ""
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(data)
 }
 
 // expandHome resolves a leading "~" to the user's home directory.

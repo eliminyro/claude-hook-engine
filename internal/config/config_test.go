@@ -24,10 +24,12 @@ func TestLoadMemoryMCPPrompts(t *testing.T) {
 		"memory_mcp": {
 			"url": "https://mcp.example/mcp",
 			"api_key": "literal://tok",
-			"cache_dir": "~/.claude/cache/prompts",
 			"authority": "AUTH",
 			"prompts": [
-				{"path": "prompts/derpy/root", "paths": ["/a"], "scope": ["a11s/platform"]}
+				{
+					"path": "prompts/derpy/root", "paths": ["/a"], "scope": ["a11s/platform"],
+					"layers_dir": "~/.claude/context/derpy", "imports_in": "~/.claude/CLAUDE.md"
+				}
 			]
 		}
 	}`)
@@ -36,8 +38,7 @@ func TestLoadMemoryMCPPrompts(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	mc := cfg.MemoryMCP
-	if mc.URL != "https://mcp.example/mcp" || mc.APIKey != "literal://tok" ||
-		mc.CacheDir != "~/.claude/cache/prompts" || mc.Authority != "AUTH" {
+	if mc.URL != "https://mcp.example/mcp" || mc.APIKey != "literal://tok" || mc.Authority != "AUTH" {
 		t.Errorf("memory_mcp scalar fields wrong: %+v", mc)
 	}
 	if len(mc.Prompts) != 1 {
@@ -47,6 +48,10 @@ func TestLoadMemoryMCPPrompts(t *testing.T) {
 	if p.Path != "prompts/derpy/root" || len(p.Paths) != 1 || p.Paths[0] != "/a" ||
 		len(p.Scope) != 1 || p.Scope[0] != "a11s/platform" {
 		t.Errorf("prompt entry wrong: %+v", p)
+	}
+	// The destination keys are what the old config silently dropped.
+	if p.LayersDir != "~/.claude/context/derpy" || p.ImportsIn != "~/.claude/CLAUDE.md" {
+		t.Errorf("layer destination not parsed: %+v", p)
 	}
 }
 

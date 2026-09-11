@@ -42,12 +42,11 @@ type MemoryMCPConfig struct {
 	APIKey    string         `json:"api_key" yaml:"api_key"`
 	Prompts   []PromptConfig `json:"prompts" yaml:"prompts"`
 	Authority string         `json:"authority" yaml:"authority"`
-	CacheDir  string         `json:"cache_dir" yaml:"cache_dir"`
 }
 
-// PromptConfig is one prompt document assembled and injected at session start.
-// Path is category/subcategory/slug in memory; an empty LayersDir keeps the
-// legacy inline injection, which the hook output size limit truncates.
+// PromptConfig is one prompt document written out as @-imported layer files at
+// session start. Path is category/subcategory/slug in memory; LayersDir and
+// ImportsIn are both required.
 type PromptConfig struct {
 	Path      string   `json:"path" yaml:"path"`
 	Paths     []string `json:"paths" yaml:"paths"`           // cwd gate; empty = always

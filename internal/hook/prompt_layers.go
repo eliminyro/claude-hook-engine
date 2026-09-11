@@ -1,8 +1,8 @@
 package hook
 
 import (
-	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +11,10 @@ import (
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 )
+
+// errNoImportMarkers reports an imports_in file with no managed block for this
+// prompt: guessing where to inject one is worse than leaving the file alone.
+var errNoImportMarkers = errors.New("no generated marker block")
 
 // promptLayer is one document of an assembled prompt — the root or one of its
 // includes — carrying the source document's updated_at.
@@ -21,10 +25,8 @@ type promptLayer struct {
 	UpdatedAt time.Time
 }
 
-// promptDoc is a get_document(expand) response split into layers. Assembled is
-// what assemblePrompt returns, retained for the single-file cache.
+// promptDoc is a get_document(expand) response split into layers.
 type promptDoc struct {
-	Assembled  string
 	Layers     []promptLayer
 	Unresolved []string
 }
@@ -93,12 +95,6 @@ func parsePromptDoc(raw string) *promptDoc {
 			out.Unresolved = append(out.Unresolved, m.DocumentID+" ("+m.Status+")")
 		}
 	}
-
-	parts := make([]string, 0, len(out.Layers))
-	for _, l := range out.Layers {
-		parts = append(parts, l.Markdown)
-	}
-	out.Assembled = strings.Join(parts, "\n\n")
 	return out
 }
 
@@ -122,9 +118,9 @@ func layerFileName(slug string) string {
 	return safe + ".md"
 }
 
-// writePromptLayers writes one file per layer, stamping mtime with the source
-// document's updated_at so staleness shows in ls(1). Returns the basenames whose
-// content changed — the layers a session must re-read.
+// writePromptLayers writes one file per layer and stamps its mtime with the
+// document's updated_at. A file already carrying that stamp is left untouched;
+// anything else — stale, hand-edited, missing — is rewritten. Returns basenames.
 func writePromptLayers(dir string, layers []promptLayer) ([]string, error) {
 	root := expandHome(dir)
 	if root == "" {
@@ -133,33 +129,74 @@ func writePromptLayers(dir string, layers []promptLayer) ([]string, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("prompt layers: %w", err)
 	}
-	var changed []string
+	var wrote []string
 	for _, l := range layers {
 		name := layerFileName(l.Slug)
 		if name == "" {
 			continue
 		}
 		path := filepath.Join(root, name)
-		body := []byte(l.Markdown + "\n")
-		prev, readErr := os.ReadFile(path)
-		stamped := false
-		if st, err := os.Stat(path); err == nil {
-			stamped = st.ModTime().Equal(l.UpdatedAt)
+		if st, err := os.Stat(path); err == nil && st.ModTime().Equal(l.UpdatedAt) {
+			continue
 		}
-		wrote := false
-		if readErr != nil || !bytes.Equal(prev, body) {
-			if err := os.WriteFile(path, body, 0o644); err != nil {
-				return changed, fmt.Errorf("prompt layers: %w", err)
+		if err := os.WriteFile(path, []byte(l.Markdown+"\n"), 0o644); err != nil {
+			return wrote, fmt.Errorf("prompt layers: %w", err)
+		}
+		wrote = append(wrote, name)
+		// An unparsable updated_at leaves the file unstamped, so it is rewritten
+		// every session rather than being mistaken for current.
+		if !l.UpdatedAt.IsZero() {
+			if err := os.Chtimes(path, l.UpdatedAt, l.UpdatedAt); err != nil {
+				return wrote, fmt.Errorf("prompt layers: stamping %s: %w", name, err)
 			}
-			changed, wrote = append(changed, name), true
-		}
-		// Re-stamp only when the stamp would actually move: a session that
-		// changes nothing must leave these files entirely untouched.
-		if !l.UpdatedAt.IsZero() && (wrote || !stamped) {
-			_ = os.Chtimes(path, l.UpdatedAt, l.UpdatedAt)
 		}
 	}
-	return changed, nil
+	return wrote, nil
+}
+
+// prunePromptLayers deletes *.md files directly in dir that no resolved layer
+// claims. Only ever called after a fetch that returned layers: an empty keep set
+// from a failed fetch would erase the instructions.
+func prunePromptLayers(dir string, keep map[string]bool) ([]string, error) {
+	root := expandHome(dir)
+	if root == "" {
+		return nil, fmt.Errorf("prompt layers: unresolvable dir %q", dir)
+	}
+	// Nothing to keep means nothing was resolved; deleting the lot is the one
+	// outcome this whole guard chain exists to prevent.
+	if len(keep) == 0 {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("prompt layers: %w", err)
+	}
+	var deleted []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".md") || keep[name] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(root, name)); err != nil {
+			return deleted, fmt.Errorf("prompt layers: %w", err)
+		}
+		deleted = append(deleted, name)
+	}
+	return deleted, nil
+}
+
+// layerFileNames is the keep set for pruning: every file the resolved layers own.
+func layerFileNames(layers []promptLayer) map[string]bool {
+	keep := make(map[string]bool, len(layers))
+	for _, l := range layers {
+		if name := layerFileName(l.Slug); name != "" {
+			keep[name] = true
+		}
+	}
+	return keep
 }
 
 // promptImportMarkers bound one entry's managed block, keyed by document path so
@@ -190,16 +227,19 @@ func promptImportBlock(entry config.PromptConfig, authority string, layers []pro
 	return b.String()
 }
 
-// syncPromptImports replaces the managed block, preserving everything outside the
-// markers and appending when they are absent. Writes only on a real diff, so an
-// unchanged layer set leaves the file's bytes and mtime alone.
+// syncPromptImports replaces the content between the managed markers, leaving
+// every byte outside them as it was. A file with no marker pair is never
+// written: guessing where the block belongs corrupts a hand-kept file silently.
 func syncPromptImports(file, block string) (bool, error) {
 	path := expandHome(file)
 	if path == "" {
 		return false, fmt.Errorf("prompt imports: unresolvable path %q", file)
 	}
 	prev, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, errNoImportMarkers
+		}
 		return false, fmt.Errorf("prompt imports: %w", err)
 	}
 	mode := os.FileMode(0o644)
@@ -211,25 +251,17 @@ func syncPromptImports(file, block string) (bool, error) {
 	end := block[strings.LastIndex(block, "\n")+1:]
 
 	body := string(prev)
-	var next string
-	if i := strings.Index(body, begin); i < 0 {
-		next = strings.TrimRight(body, "\n")
-		if next != "" {
-			next += "\n\n"
-		}
-		next += block + "\n"
-	} else {
-		j := strings.Index(body[i:], end)
-		if j < 0 {
-			return false, fmt.Errorf("prompt imports: %s has an unterminated managed block", file)
-		}
-		next = body[:i] + block + body[i+j+len(end):]
+	i := strings.Index(body, begin)
+	if i < 0 {
+		return false, errNoImportMarkers
 	}
+	j := strings.Index(body[i:], end)
+	if j < 0 {
+		return false, fmt.Errorf("prompt imports: %s has an unterminated managed block", file)
+	}
+	next := body[:i] + block + body[i+j+len(end):]
 	if next == body {
 		return false, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, fmt.Errorf("prompt imports: %w", err)
 	}
 	if err := os.WriteFile(path, []byte(next), mode); err != nil {
 		return false, fmt.Errorf("prompt imports: %w", err)
@@ -237,27 +269,50 @@ func syncPromptImports(file, block string) (bool, error) {
 	return true, nil
 }
 
-// syncPromptLayers writes the layer files and regenerates the import block.
-// Failures are reported to the session rather than aborting it, since the last
-// good layers on disk are still imported.
-func syncPromptLayers(entry config.PromptConfig, authority string, pd *promptDoc) string {
-	if _, err := writePromptLayers(entry.LayersDir, pd.Layers); err != nil {
-		return fmt.Sprintf("Prompt layers for `%s` could not be written: %v", entry.Path, err)
+// syncPromptLayers writes changed layers, prunes orphans and regenerates the
+// import block. Failures are reported to the session rather than aborting it,
+// since the layers already on disk stay imported.
+func syncPromptLayers(entry config.PromptConfig, authority string, pd *promptDoc) []string {
+	var notices []string
+	wrote, err := writePromptLayers(entry.LayersDir, pd.Layers)
+	if err != nil {
+		notices = append(notices, fmt.Sprintf("Prompt `%s`: layer files could not be written — %v", entry.Path, err))
 	}
-	if entry.ImportsIn != "" {
-		if _, err := syncPromptImports(entry.ImportsIn, promptImportBlock(entry, authority, pd.Layers)); err != nil {
-			return fmt.Sprintf("Prompt imports for `%s` could not be synced: %v", entry.Path, err)
-		}
+	deleted, err := prunePromptLayers(entry.LayersDir, layerFileNames(pd.Layers))
+	if err != nil {
+		notices = append(notices, fmt.Sprintf("Prompt `%s`: stale layer files could not be pruned — %v", entry.Path, err))
 	}
-	return promptWarnings(entry, pd.Unresolved)
+	if line := promptChangeLine(entry, wrote, deleted, pd.Unresolved); line != "" {
+		notices = append(notices, line)
+	}
+	switch _, err := syncPromptImports(entry.ImportsIn, promptImportBlock(entry, authority, pd.Layers)); {
+	case errors.Is(err, errNoImportMarkers):
+		notices = append(notices, fmt.Sprintf(
+			"Prompt `%s`: %s has no generated marker block, so the @-imports were left as they are.", entry.Path, entry.ImportsIn))
+	case err != nil:
+		notices = append(notices, fmt.Sprintf("Prompt `%s`: imports could not be synced — %v", entry.Path, err))
+	}
+	return notices
 }
 
-// promptWarnings reports only what the layer files themselves cannot show: an
-// include memory-mcp declined to resolve. Changed content needs no notice —
-// @-imports resolve after this hook, so fresh layers are already in context.
-func promptWarnings(entry config.PromptConfig, unresolved []string) string {
-	if len(unresolved) == 0 {
+// promptChangeLine names the layers this session changed, since nothing else
+// tells the session its operating instructions just moved. Empty when the
+// layers on disk already matched their documents.
+func promptChangeLine(entry config.PromptConfig, wrote, deleted, unresolved []string) string {
+	var parts []string
+	if len(wrote) > 0 {
+		parts = append(parts, "updated "+strings.Join(wrote, ", "))
+	}
+	if len(deleted) > 0 {
+		parts = append(parts, "removed "+strings.Join(deleted, ", "))
+	}
+	if len(parts) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("Prompt `%s`: includes that did not resolve — %s", entry.Path, strings.Join(unresolved, ", "))
+	line := fmt.Sprintf("Prompt `%s`: layer files changed this session — %s. Re-read them.",
+		entry.Path, strings.Join(parts, "; "))
+	if len(unresolved) > 0 {
+		line += " Includes that did not resolve: " + strings.Join(unresolved, ", ") + "."
+	}
+	return line
 }

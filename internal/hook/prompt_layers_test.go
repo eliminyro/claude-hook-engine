@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,12 +40,8 @@ func TestParsePromptDocLayers(t *testing.T) {
 	if pd.Layers[1].UpdatedAt.Format(time.RFC3339) != "2026-09-05T18:04:48Z" {
 		t.Errorf("persona updated_at = %v", pd.Layers[1].UpdatedAt)
 	}
-	// Assembled stays byte-identical to the single-blob rendering.
-	if got := assemblePrompt(layeredDocJSON); got != pd.Assembled {
-		t.Errorf("assemblePrompt disagrees with Assembled:\n%q\n%q", got, pd.Assembled)
-	}
-	if !strings.Contains(pd.Assembled, "# persona\n\nPERSONA-BODY") {
-		t.Errorf("assembled missing rendered include: %q", pd.Assembled)
+	if pd.Layers[1].Markdown != "# persona\n\nPERSONA-BODY" {
+		t.Errorf("include rendering = %q", pd.Layers[1].Markdown)
 	}
 	if len(pd.Unresolved) != 1 || !strings.Contains(pd.Unresolved[0], "scope_mismatch") {
 		t.Errorf("Unresolved = %v, want the one non-included manifest entry", pd.Unresolved)
@@ -68,16 +65,16 @@ func TestLayerFileNameStaysOnePathElement(t *testing.T) {
 	}
 }
 
-func TestWritePromptLayersStampsMtimeAndReportsDrift(t *testing.T) {
+func TestWritePromptLayersStampsMtimeWithUpdatedAt(t *testing.T) {
 	dir := t.TempDir()
 	pd := parsePromptDoc(layeredDocJSON)
 
-	changed, err := writePromptLayers(dir, pd.Layers)
+	wrote, err := writePromptLayers(dir, pd.Layers)
 	if err != nil {
 		t.Fatalf("writePromptLayers: %v", err)
 	}
-	if want := "root.md,persona.md,no-slop.md"; strings.Join(changed, ",") != want {
-		t.Errorf("first write changed = %v, want all three", changed)
+	if want := "root.md,persona.md,no-slop.md"; strings.Join(wrote, ",") != want {
+		t.Errorf("first write = %v, want all three", wrote)
 	}
 	body, err := os.ReadFile(filepath.Join(dir, "persona.md"))
 	if err != nil {
@@ -86,31 +83,48 @@ func TestWritePromptLayersStampsMtimeAndReportsDrift(t *testing.T) {
 	if !strings.Contains(string(body), "PERSONA-BODY") {
 		t.Errorf("persona.md = %q", body)
 	}
+	// The stamp is exact: the skip test below compares with time.Equal.
 	st, err := os.Stat(filepath.Join(dir, "persona.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := st.ModTime().UTC().Truncate(time.Second), pd.Layers[1].UpdatedAt.UTC().Truncate(time.Second); !got.Equal(want) {
-		t.Errorf("mtime = %v, want the document's updated_at %v", got, want)
-	}
-
-	// Unchanged content must not be reported as drift on a later session.
-	if changed, err = writePromptLayers(dir, pd.Layers); err != nil || len(changed) != 0 {
-		t.Errorf("second write changed = %v (err %v), want none", changed, err)
-	}
-
-	// An edited layer is written alone.
-	edited := parsePromptDoc(strings.Replace(layeredDocJSON, "PERSONA-BODY", "PERSONA-V2", 1))
-	changed, err = writePromptLayers(dir, edited.Layers)
-	if err != nil {
-		t.Fatalf("writePromptLayers: %v", err)
-	}
-	if len(changed) != 1 || changed[0] != "persona.md" {
-		t.Errorf("changed = %v, want [persona.md]", changed)
+	if !st.ModTime().Equal(pd.Layers[1].UpdatedAt) {
+		t.Errorf("mtime = %v, want the document's updated_at %v", st.ModTime().UTC(), pd.Layers[1].UpdatedAt)
 	}
 }
 
-func TestWritePromptLayersRestampsOnlyWhenTheStampMoved(t *testing.T) {
+func TestWritePromptLayersSkipsAnUnchangedLayer(t *testing.T) {
+	dir := t.TempDir()
+	pd := parsePromptDoc(layeredDocJSON)
+	if _, err := writePromptLayers(dir, pd.Layers); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "persona.md")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wrote, err := writePromptLayers(dir, pd.Layers)
+	if err != nil || len(wrote) != 0 {
+		t.Fatalf("second write = %v (err %v), want nothing", wrote, err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) || !os.SameFile(before, after) {
+		t.Error("an unchanged layer must be left byte-for-byte and mtime-for-mtime")
+	}
+
+	// updated_at decides, not content: a same-timestamp document is not rewritten.
+	sameStamp := parsePromptDoc(strings.Replace(layeredDocJSON, "PERSONA-BODY", "PERSONA-DRIFT", 1))
+	if wrote, err = writePromptLayers(dir, sameStamp.Layers); err != nil || len(wrote) != 0 {
+		t.Errorf("same updated_at = %v (err %v), want no rewrite", wrote, err)
+	}
+}
+
+func TestWritePromptLayersRewritesWhenUpdatedAtMoved(t *testing.T) {
 	dir := t.TempDir()
 	pd := parsePromptDoc(layeredDocJSON)
 	if _, err := writePromptLayers(dir, pd.Layers); err != nil {
@@ -118,28 +132,87 @@ func TestWritePromptLayersRestampsOnlyWhenTheStampMoved(t *testing.T) {
 	}
 	path := filepath.Join(dir, "persona.md")
 
-	// A wrong mtime is corrected without rewriting the content.
-	wrong := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
-	if err := os.Chtimes(path, wrong, wrong); err != nil {
-		t.Fatal(err)
+	changed := parsePromptDoc(strings.NewReplacer(
+		"PERSONA-BODY", "PERSONA-V2",
+		"2026-09-05T18:04:48.722843Z", "2026-09-07T09:00:00Z",
+	).Replace(layeredDocJSON))
+	wrote, err := writePromptLayers(dir, changed.Layers)
+	if err != nil {
+		t.Fatalf("writePromptLayers: %v", err)
 	}
-	changed, err := writePromptLayers(dir, pd.Layers)
-	if err != nil || len(changed) != 0 {
-		t.Fatalf("changed = %v (err %v), want no content write", changed, err)
+	if len(wrote) != 1 || wrote[0] != "persona.md" {
+		t.Fatalf("wrote = %v, want [persona.md]", wrote)
+	}
+	body, _ := os.ReadFile(path)
+	if !strings.Contains(string(body), "PERSONA-V2") {
+		t.Errorf("persona.md not updated: %q", body)
 	}
 	st, _ := os.Stat(path)
-	if st.ModTime().Equal(wrong) {
-		t.Error("a wrong mtime should have been re-stamped")
+	if !st.ModTime().Equal(changed.Layers[1].UpdatedAt) {
+		t.Errorf("mtime = %v, want restamp to %v", st.ModTime().UTC(), changed.Layers[1].UpdatedAt)
 	}
+}
 
-	// Already stamped: the file must be left completely alone, metadata included.
-	before, _ := os.Stat(path)
+func TestWritePromptLayersRestoresAHandEditedFile(t *testing.T) {
+	dir := t.TempDir()
+	pd := parsePromptDoc(layeredDocJSON)
 	if _, err := writePromptLayers(dir, pd.Layers); err != nil {
 		t.Fatal(err)
 	}
-	after, _ := os.Stat(path)
-	if !after.ModTime().Equal(before.ModTime()) || !os.SameFile(before, after) {
-		t.Error("an unchanged, correctly stamped layer must not be touched")
+	path := filepath.Join(dir, "persona.md")
+	if err := os.WriteFile(path, []byte("HAND-EDITED\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wrote, err := writePromptLayers(dir, pd.Layers)
+	if err != nil {
+		t.Fatalf("writePromptLayers: %v", err)
+	}
+	if len(wrote) != 1 || wrote[0] != "persona.md" {
+		t.Fatalf("wrote = %v, want the hand-edited layer restored", wrote)
+	}
+	body, _ := os.ReadFile(path)
+	if strings.Contains(string(body), "HAND-EDITED") || !strings.Contains(string(body), "PERSONA-BODY") {
+		t.Errorf("hand edit not reverted from the document: %q", body)
+	}
+}
+
+func TestPrunePromptLayersDeletesOnlyOrphanMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	pd := parsePromptDoc(layeredDocJSON)
+	if _, err := writePromptLayers(dir, pd.Layers); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "nested.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The prompt now resolves only root and persona.
+	deleted, err := prunePromptLayers(dir, layerFileNames(pd.Layers[:2]))
+	if err != nil {
+		t.Fatalf("prunePromptLayers: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != "no-slop.md" {
+		t.Fatalf("deleted = %v, want [no-slop.md]", deleted)
+	}
+	for _, keep := range []string{"root.md", "persona.md", "keep.txt", "sub/nested.md"} {
+		if _, err := os.Stat(filepath.Join(dir, keep)); err != nil {
+			t.Errorf("%s should have survived pruning: %v", keep, err)
+		}
+	}
+
+	// An empty keep set means nothing resolved, not that nothing is wanted.
+	if deleted, err = prunePromptLayers(dir, nil); err != nil || len(deleted) != 0 {
+		t.Errorf("empty keep set deleted %v (err %v), want nothing", deleted, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "root.md")); err != nil {
+		t.Errorf("an empty keep set must never empty the directory: %v", err)
 	}
 }
 
@@ -169,13 +242,15 @@ func TestPromptImportBlockRefsInIncludeOrder(t *testing.T) {
 	}
 }
 
-func TestSyncPromptImportsPreservesTheRestOfTheFile(t *testing.T) {
-	dir := t.TempDir()
-	file := filepath.Join(dir, "CLAUDE.md")
-	if err := os.WriteFile(file, []byte("# Hand-written notes\n\nKeep me.\n"), 0o644); err != nil {
+func TestSyncPromptImportsPreservesEveryByteOutsideTheMarkers(t *testing.T) {
+	entry := config.PromptConfig{Path: "prompts/derpy/root", LayersDir: "/layers"}
+	file := markedFile(t, entry.Path)
+	orig, err := os.ReadFile(file)
+	if err != nil {
 		t.Fatal(err)
 	}
-	entry := config.PromptConfig{Path: "prompts/derpy/root", LayersDir: dir}
+	begin, end := promptImportMarkers(entry.Path)
+	head, tail := string(orig[:strings.Index(string(orig), begin)]), string(orig[strings.Index(string(orig), end)+len(end):])
 	pd := parsePromptDoc(layeredDocJSON)
 
 	wrote, err := syncPromptImports(file, promptImportBlock(entry, "", pd.Layers))
@@ -183,8 +258,11 @@ func TestSyncPromptImportsPreservesTheRestOfTheFile(t *testing.T) {
 		t.Fatalf("first sync wrote=%v err=%v, want a write", wrote, err)
 	}
 	body, _ := os.ReadFile(file)
-	if !strings.Contains(string(body), "Keep me.") {
-		t.Errorf("hand-written content was lost: %q", body)
+	if !strings.HasPrefix(string(body), head) || !strings.HasSuffix(string(body), tail) {
+		t.Errorf("bytes outside the markers changed:\n%s", body)
+	}
+	if !strings.Contains(string(body), "@/layers/persona.md") {
+		t.Errorf("import missing:\n%s", body)
 	}
 
 	// Re-syncing an unchanged layer set must not touch the file at all.
@@ -192,18 +270,15 @@ func TestSyncPromptImportsPreservesTheRestOfTheFile(t *testing.T) {
 	if err := os.Chtimes(file, old, old); err != nil {
 		t.Fatal(err)
 	}
-	wrote, err = syncPromptImports(file, promptImportBlock(entry, "", pd.Layers))
-	if err != nil || wrote {
+	if wrote, err = syncPromptImports(file, promptImportBlock(entry, "", pd.Layers)); err != nil || wrote {
 		t.Errorf("second sync wrote=%v err=%v, want no write", wrote, err)
 	}
-	st, _ := os.Stat(file)
-	if st.ModTime().After(old.Add(time.Second)) {
+	if st, _ := os.Stat(file); st.ModTime().After(old.Add(time.Second)) {
 		t.Error("unchanged layer set must leave mtime alone")
 	}
 
 	// A changed layer set rewrites the block in place, without duplicating it.
-	fewer := &promptDoc{Layers: pd.Layers[:2]}
-	if wrote, err = syncPromptImports(file, promptImportBlock(entry, "", fewer.Layers)); err != nil || !wrote {
+	if wrote, err = syncPromptImports(file, promptImportBlock(entry, "", pd.Layers[:2])); err != nil || !wrote {
 		t.Fatalf("changed set wrote=%v err=%v, want a write", wrote, err)
 	}
 	body, _ = os.ReadFile(file)
@@ -212,6 +287,39 @@ func TestSyncPromptImportsPreservesTheRestOfTheFile(t *testing.T) {
 	}
 	if strings.Contains(string(body), "no-slop.md") {
 		t.Errorf("dropped layer still imported:\n%s", body)
+	}
+	if !strings.HasPrefix(string(body), head) || !strings.HasSuffix(string(body), tail) {
+		t.Errorf("bytes outside the markers changed on rewrite:\n%s", body)
+	}
+}
+
+func TestSyncPromptImportsLeavesAnUnmarkedFileAlone(t *testing.T) {
+	dir := t.TempDir()
+	entry := config.PromptConfig{Path: "prompts/derpy/root", LayersDir: dir}
+	pd := parsePromptDoc(layeredDocJSON)
+	block := promptImportBlock(entry, "", pd.Layers)
+
+	unmarked := filepath.Join(dir, "CLAUDE.md")
+	body := []byte("# Hand-written only\n\nNo markers here.\n")
+	if err := os.WriteFile(unmarked, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wrote, err := syncPromptImports(unmarked, block)
+	if wrote || !errors.Is(err, errNoImportMarkers) {
+		t.Errorf("wrote=%v err=%v, want no write and errNoImportMarkers", wrote, err)
+	}
+	got, _ := os.ReadFile(unmarked)
+	if string(got) != string(body) {
+		t.Errorf("unmarked file was modified: %q", got)
+	}
+
+	// A file that does not exist is not created either.
+	missing := filepath.Join(dir, "nope", "CLAUDE.md")
+	if wrote, err = syncPromptImports(missing, block); wrote || !errors.Is(err, errNoImportMarkers) {
+		t.Errorf("missing file: wrote=%v err=%v, want errNoImportMarkers", wrote, err)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Error("a missing imports_in file must not be created")
 	}
 }
 
@@ -234,8 +342,8 @@ func TestHandleSessionStart_LayerDelivery(t *testing.T) {
 	defer srv.Close()
 
 	layersDir := t.TempDir()
-	claudeMD := filepath.Join(t.TempDir(), "CLAUDE.md")
-	rules := writeRules(t, srv.URL, t.TempDir(), "AUTHORITY-LINE", []map[string]any{
+	claudeMD := markedFile(t, "prompts/derpy/root")
+	rules := writeRules(t, srv.URL, "AUTHORITY-LINE", []map[string]any{
 		{"path": "prompts/derpy/root", "layers_dir": layersDir, "imports_in": claudeMD},
 	})
 	ac := runSession(t, rules, "/anywhere")
@@ -246,19 +354,15 @@ func TestHandleSessionStart_LayerDelivery(t *testing.T) {
 			t.Errorf("layer body %q was injected inline; got %q", body, ac)
 		}
 	}
-	// Only the unresolved include warrants a warning; changed content does not,
-	// since @-imports resolve after this hook runs.
-	if !strings.Contains(ac, "scope_mismatch") {
-		t.Errorf("unresolved include not reported; got %q", ac)
+	// The change line names every layer written and leads the context: anything
+	// past the hook output size limit is truncated away.
+	if !strings.HasPrefix(ac, "Prompt `prompts/derpy/root`: layer files changed this session") {
+		t.Errorf("change line must lead additionalContext; got %q", ac)
 	}
-	for _, unwanted := range []string{"persona.md", "no-slop.md", "stale"} {
-		if strings.Contains(ac, unwanted) {
-			t.Errorf("additionalContext should not mention %q; got %q", unwanted, ac)
+	for _, name := range []string{"root.md", "persona.md", "no-slop.md", "scope_mismatch"} {
+		if !strings.Contains(ac, name) {
+			t.Errorf("additionalContext should name %q; got %q", name, ac)
 		}
-	}
-	// Warnings must lead: anything past the size limit is truncated away.
-	if !strings.HasPrefix(ac, "Prompt `prompts/derpy/root`:") {
-		t.Errorf("warning must lead additionalContext; got %q", ac)
 	}
 
 	for _, name := range []string{"root.md", "persona.md", "no-slop.md"} {
@@ -270,24 +374,82 @@ func TestHandleSessionStart_LayerDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"AUTHORITY-LINE", "@" + layersDir + "/persona.md", "END -->"} {
+	for _, want := range []string{"Keep me.", "AUTHORITY-LINE", "@" + layersDir + "/persona.md", "END -->", "Trailing text."} {
 		if !strings.Contains(string(block), want) {
 			t.Errorf("CLAUDE.md missing %q:\n%s", want, block)
 		}
 	}
 }
 
+func TestHandleSessionStart_UnchangedSessionSaysNothing(t *testing.T) {
+	srv := mcpDocServer(t, layeredDocJSON)
+	defer srv.Close()
+
+	layersDir := t.TempDir()
+	claudeMD := markedFile(t, "prompts/derpy/root")
+	rules := writeRules(t, srv.URL, "", []map[string]any{
+		{"path": "prompts/derpy/root", "layers_dir": layersDir, "imports_in": claudeMD},
+	})
+	if ac := runSession(t, rules, "/x"); !strings.Contains(ac, "root.md") {
+		t.Fatalf("first session should report the written layers; got %q", ac)
+	}
+	before, err := os.ReadFile(claudeMD)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ac := runSession(t, rules, "/x")
+	if strings.Contains(ac, "prompts/derpy/root") || strings.Contains(ac, ".md") {
+		t.Errorf("an unchanged session must contribute nothing; got %q", ac)
+	}
+	after, _ := os.ReadFile(claudeMD)
+	if string(after) != string(before) {
+		t.Error("an unchanged session must not rewrite the import block")
+	}
+}
+
+func TestHandleSessionStart_LayerDeliveryPrunesARemovedLayer(t *testing.T) {
+	layersDir := t.TempDir()
+	claudeMD := markedFile(t, "prompts/derpy/root")
+	orphan := filepath.Join(layersDir, "retired.md")
+	if err := os.WriteFile(orphan, []byte("OLD-LAYER\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := mcpDocServer(t, layeredDocJSON)
+	defer srv.Close()
+	rules := writeRules(t, srv.URL, "", []map[string]any{
+		{"path": "prompts/derpy/root", "layers_dir": layersDir, "imports_in": claudeMD},
+	})
+	ac := runSession(t, rules, "/x")
+
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Error("a layer no document backs must be pruned")
+	}
+	if !strings.Contains(ac, "removed retired.md") {
+		t.Errorf("the pruned layer must be named; got %q", ac)
+	}
+}
+
 func TestHandleSessionStart_LayerDeliveryFetchFailureLeavesDiskAlone(t *testing.T) {
 	layersDir := t.TempDir()
-	claudeMD := filepath.Join(t.TempDir(), "CLAUDE.md")
+	claudeMD := markedFile(t, "prompts/derpy/root")
 	stale := filepath.Join(layersDir, "persona.md")
 	if err := os.WriteFile(stale, []byte("LAST-GOOD\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(claudeMD)
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	down := mcpDownServer(t)
 	defer down.Close()
-	rules := writeRules(t, down.URL, t.TempDir(), "", []map[string]any{
+	rules := writeRules(t, down.URL, "", []map[string]any{
 		{"path": "prompts/derpy/root", "layers_dir": layersDir, "imports_in": claudeMD},
 	})
 	ac := runSession(t, rules, "/anywhere")
@@ -297,9 +459,12 @@ func TestHandleSessionStart_LayerDeliveryFetchFailureLeavesDiskAlone(t *testing.
 	}
 	body, err := os.ReadFile(stale)
 	if err != nil || string(body) != "LAST-GOOD\n" {
-		t.Errorf("last good layer was disturbed: %q (%v)", body, err)
+		t.Fatalf("last good layer was disturbed: %q (%v)", body, err)
 	}
-	if _, err := os.Stat(claudeMD); !os.IsNotExist(err) {
-		t.Error("a failed fetch must not write an import block")
+	if st, _ := os.Stat(stale); !st.ModTime().Equal(old) {
+		t.Error("a failed fetch must not restamp a layer file")
+	}
+	if after, _ := os.ReadFile(claudeMD); string(after) != string(before) {
+		t.Error("a failed fetch must not rewrite the import block")
 	}
 }

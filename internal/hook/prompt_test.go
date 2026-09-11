@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/eliminyro/claude-hook-engine/internal/config"
 )
 
 func TestSplitPromptPath(t *testing.T) {
@@ -29,114 +27,91 @@ func TestSplitPromptPath(t *testing.T) {
 	}
 }
 
-func TestAssemblePrompt(t *testing.T) {
-	raw := `{"sections":[{"content":"ROOT-A"},{"content":"ROOT-B"}],"includes":[{"sections":[{"content":"INC-1"}]},{"sections":[{"content":"INC-2"}]}]}`
-	got := assemblePrompt(raw)
-	want := "ROOT-A\n\nROOT-B\n\nINC-1\n\nINC-2"
-	if got != want {
-		t.Errorf("assemblePrompt = %q, want %q", got, want)
+func TestParsePromptDocRendering(t *testing.T) {
+	raw := `{"slug":"root","sections":[{"content":"ROOT-A"},{"content":"ROOT-B"}],"includes":[{"slug":"one","sections":[{"content":"INC-1"}]},{"slug":"two","sections":[{"content":"INC-2"}]}]}`
+	pd := parsePromptDoc(raw)
+	if pd == nil {
+		t.Fatal("expected a parsed doc")
+	}
+	want := []string{"ROOT-A\n\nROOT-B", "INC-1", "INC-2"}
+	if len(pd.Layers) != len(want) {
+		t.Fatalf("got %d layers, want %d", len(pd.Layers), len(want))
+	}
+	for i, w := range want {
+		if pd.Layers[i].Markdown != w {
+			t.Errorf("layer %d = %q, want %q", i, pd.Layers[i].Markdown, w)
+		}
 	}
 
 	// Title and headings are reconstructed as markdown, root then includes.
-	structured := `{"title":"root","sections":[{"heading":"H","content":"body"}],"includes":[{"title":"persona","sections":[{"content":"pre"},{"heading":"Core","content":"c1"}]}]}`
-	got = assemblePrompt(structured)
-	want = "# root\n\n## H\n\nbody\n\n# persona\n\npre\n\n## Core\n\nc1"
-	if got != want {
-		t.Errorf("assemblePrompt(structured) = %q, want %q", got, want)
+	structured := `{"slug":"root","title":"root","sections":[{"heading":"H","content":"body"}],"includes":[{"slug":"persona","title":"persona","sections":[{"content":"pre"},{"heading":"Core","content":"c1"}]}]}`
+	pd = parsePromptDoc(structured)
+	if pd == nil || len(pd.Layers) != 2 {
+		t.Fatalf("structured doc = %+v", pd)
+	}
+	if got, w := pd.Layers[0].Markdown, "# root\n\n## H\n\nbody"; got != w {
+		t.Errorf("root layer = %q, want %q", got, w)
+	}
+	if got, w := pd.Layers[1].Markdown, "# persona\n\npre\n\n## Core\n\nc1"; got != w {
+		t.Errorf("include layer = %q, want %q", got, w)
 	}
 
-	if assemblePrompt("") != "" || assemblePrompt("not json") != "" {
-		t.Error("assemblePrompt should return empty on empty/invalid input")
-	}
-}
-
-func TestPromptCacheRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	entry := config.PromptConfig{Path: "prompts/derpy/persona", Scope: []string{"a11s"}}
-	path := promptCachePath(dir, entry)
-	if path == "" {
-		t.Fatal("expected a cache path")
-	}
-	writePromptCache(path, "CACHED")
-	if got := readPromptCache(path); got != "CACHED" {
-		t.Errorf("readPromptCache = %q, want CACHED", got)
-	}
-	// Empty cacheDir yields no path; reads of a missing file are empty.
-	if promptCachePath("", entry) != "" {
-		t.Error("empty cacheDir should yield empty path")
-	}
-	if readPromptCache(filepath.Join(dir, "nope.md")) != "" {
-		t.Error("missing cache file should read empty")
-	}
-}
-
-func TestHandleSessionStart_PromptInjection(t *testing.T) {
-	docJSON := `{"sections":[{"content":"PERSONA"}],"includes":[{"sections":[{"content":"NO-SLOP"}]}]}`
-	srv := mcpDocServer(t, docJSON)
-	defer srv.Close()
-
-	rules := writeRules(t, srv.URL, t.TempDir(), "AUTHORITY-LINE", []map[string]any{
-		{"path": "prompts/derpy/root", "scope": []string{"a11s/platform"}},
-	})
-	ac := runSession(t, rules, "/anywhere")
-
-	for _, want := range []string{"AUTHORITY-LINE", "PERSONA", "NO-SLOP"} {
-		if !strings.Contains(ac, want) {
-			t.Errorf("additionalContext missing %q; got %q", want, ac)
-		}
-	}
-	if strings.Index(ac, "AUTHORITY-LINE") > strings.Index(ac, "PERSONA") {
-		t.Error("authority line should lead the prompt block")
+	if parsePromptDoc("") != nil || parsePromptDoc("not json") != nil {
+		t.Error("parsePromptDoc should be nil on empty/invalid input")
 	}
 }
 
 func TestHandleSessionStart_PromptGateSkips(t *testing.T) {
-	srv := mcpDocServer(t, `{"sections":[{"content":"PERSONA"}]}`)
+	srv := mcpDocServer(t, `{"slug":"root","sections":[{"content":"PERSONA"}]}`)
 	defer srv.Close()
 
-	rules := writeRules(t, srv.URL, t.TempDir(), "", []map[string]any{
-		{"path": "prompts/derpy/root", "paths": []string{"/only/here"}},
+	layersDir := t.TempDir()
+	rules := writeRules(t, srv.URL, "", []map[string]any{
+		{"path": "prompts/derpy/root", "paths": []string{"/only/here"},
+			"layers_dir": layersDir, "imports_in": markedFile(t, "prompts/derpy/root")},
 	})
 	ac := runSession(t, rules, "/somewhere/else")
-	if strings.Contains(ac, "PERSONA") {
+	if ac != "" && strings.Contains(ac, "prompts/derpy/root") {
 		t.Errorf("a non-matching cwd gate must skip the prompt; got %q", ac)
 	}
-}
-
-func TestHandleSessionStart_PromptCacheFallback(t *testing.T) {
-	cacheDir := t.TempDir()
-	ok := mcpDocServer(t, `{"sections":[{"content":"PERSONA"}]}`)
-	rules := writeRules(t, ok.URL, cacheDir, "", []map[string]any{{"path": "prompts/derpy/root"}})
-
-	// First session succeeds and populates the cache.
-	if ac := runSession(t, rules, "/x"); !strings.Contains(ac, "PERSONA") {
-		t.Fatalf("first session should inject; got %q", ac)
-	}
-	ok.Close()
-
-	// Second session: server unreachable, same cache dir -> cached blob injected.
-	down := mcpDownServer(t)
-	defer down.Close()
-	rules2 := writeRules(t, down.URL, cacheDir, "", []map[string]any{{"path": "prompts/derpy/root"}})
-	if ac := runSession(t, rules2, "/x"); !strings.Contains(ac, "PERSONA") {
-		t.Errorf("second session should fall back to cache; got %q", ac)
+	if _, err := os.Stat(filepath.Join(layersDir, "root.md")); !os.IsNotExist(err) {
+		t.Error("a skipped prompt must not write layer files")
 	}
 }
 
 func TestHandleSessionStart_PromptMisconfigErrors(t *testing.T) {
-	// prompts configured but no url/api_key/cache_dir -> hard error.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "rules.json")
-	body, _ := json.Marshal(map[string]any{
-		"memory_mcp": map[string]any{
+	cases := map[string]map[string]any{
+		"missing url and api_key": {
+			"prompts": []map[string]any{{
+				"path": "prompts/derpy/root", "layers_dir": "/tmp/l", "imports_in": "/tmp/c.md",
+			}},
+		},
+		"missing layers_dir and imports_in": {
+			"url": "https://mcp.example/mcp", "api_key": "literal://tok",
 			"prompts": []map[string]any{{"path": "prompts/derpy/root"}},
 		},
-	})
-	if err := os.WriteFile(path, body, 0o644); err != nil {
-		t.Fatal(err)
 	}
-	if _, err := HandleSessionStart(strings.NewReader(`{"cwd":"/x"}`), path); err == nil {
-		t.Error("expected an error when prompts are configured without url/api_key/cache_dir")
+	wantNamed := map[string][]string{
+		"missing url and api_key":           {"memory_mcp.url", "memory_mcp.api_key"},
+		"missing layers_dir and imports_in": {"layers_dir", "imports_in"},
+	}
+	for name, mc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "rules.json")
+			body, _ := json.Marshal(map[string]any{"version": 2, "memory_mcp": mc})
+			if err := os.WriteFile(path, body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := HandleSessionStart(strings.NewReader(`{"cwd":"/x"}`), path)
+			if err == nil {
+				t.Fatal("expected an error for an incomplete prompt config")
+			}
+			for _, key := range wantNamed[name] {
+				if !strings.Contains(err.Error(), key) {
+					t.Errorf("error %q does not name %q", err, key)
+				}
+			}
+		})
 	}
 }
 
@@ -178,7 +153,20 @@ func mcpDownServer(t *testing.T) *httptest.Server {
 	}))
 }
 
-func writeRules(t *testing.T, url, cacheDir, authority string, prompts []map[string]any) string {
+// markedFile is an imports_in target that already carries the managed markers,
+// which is the only shape the hook will write to.
+func markedFile(t *testing.T, promptPath string) string {
+	t.Helper()
+	begin, end := promptImportMarkers(promptPath)
+	path := filepath.Join(t.TempDir(), "CLAUDE.md")
+	body := "# Hand-written notes\n\nKeep me.\n\n" + begin + "\n" + end + "\n\nTrailing text.\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeRules(t *testing.T, url, authority string, prompts []map[string]any) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "rules.json")
@@ -187,7 +175,6 @@ func writeRules(t *testing.T, url, cacheDir, authority string, prompts []map[str
 		"memory_mcp": map[string]any{
 			"url":       url,
 			"api_key":   "literal://testtoken",
-			"cache_dir": cacheDir,
 			"authority": authority,
 			"prompts":   prompts,
 		},
