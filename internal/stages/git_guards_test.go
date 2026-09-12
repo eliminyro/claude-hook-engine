@@ -1,9 +1,11 @@
 package stages_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
@@ -286,5 +288,81 @@ func TestOnBranchNotInRepo(t *testing.T) {
 	}
 	if result != pipeline.Skip {
 		t.Fatalf("expected Skip (not in a git repo), got %d", result)
+	}
+}
+
+// The form the commit convention actually uses. The -m value wraps the heredoc,
+// so the flag regex captures `$(cat <<'EOF' … )` around the message and a length
+// guard built on it would fire ~20 characters early.
+func TestExtractCommitMessageHeredocInsideCommandSubstitution(t *testing.T) {
+	command := "git commit -m \"$(cat <<'EOF'\nfix: a thing\n\nWith a body.\nEOF\n)\""
+	got := runMessageMatchesWildcard(t, command)
+	want := "fix: a thing\n\nWith a body."
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+// A plain -m must not go near the heredoc path.
+func TestExtractCommitMessagePlainFlagUnaffected(t *testing.T) {
+	got := runMessageMatchesWildcard(t, `git commit -m "feat: still plain"`)
+	if got != "feat: still plain" {
+		t.Errorf("expected %q, got %q", "feat: still plain", got)
+	}
+}
+
+func runMessageLength(t *testing.T, command string, max int) (bool, int) {
+	t.Helper()
+	stage, err := stages.Build(config.StageConfig{
+		Stage: "message-length",
+		Args:  []string{fmt.Sprintf("%d", max)},
+	})
+	if err != nil {
+		t.Fatalf("build message-length: %v", err)
+	}
+	ctx := newCtx(command)
+	res, err := stage.Run(ctx)
+	if err != nil {
+		t.Fatalf("run message-length: %v", err)
+	}
+	n, _ := ctx.Bag["commit_message_length"].(int)
+	return res == pipeline.Continue, n
+}
+
+func TestMessageLengthDeniesOverCap(t *testing.T) {
+	long := strings.Repeat("a", 501)
+	over, n := runMessageLength(t, `git commit -m "`+long+`"`, 500)
+	if !over {
+		t.Errorf("expected a 501-char message to exceed a 500 cap")
+	}
+	if n != 501 {
+		t.Errorf("expected length 501, got %d", n)
+	}
+}
+
+func TestMessageLengthAllowsAtCap(t *testing.T) {
+	exact := strings.Repeat("a", 500)
+	over, n := runMessageLength(t, `git commit -m "`+exact+`"`, 500)
+	if over {
+		t.Errorf("expected a 500-char message to pass a 500 cap, got length %d", n)
+	}
+}
+
+// Counting bytes would reject this 3-character message against a 4 cap.
+func TestMessageLengthCountsRunesNotBytes(t *testing.T) {
+	over, n := runMessageLength(t, `git commit -m "héé"`, 4)
+	if over {
+		t.Errorf("expected 3 runes to pass a 4 cap, got length %d", n)
+	}
+	if n != 3 {
+		t.Errorf("expected 3 runes, got %d", n)
+	}
+}
+
+// A commit with no message (editor form) has nothing to measure.
+func TestMessageLengthSkipsWhenNoMessage(t *testing.T) {
+	over, _ := runMessageLength(t, `git commit --amend --no-edit`, 500)
+	if over {
+		t.Errorf("a commit carrying no message must not trip the cap")
 	}
 }

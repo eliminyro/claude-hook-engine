@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
@@ -62,6 +63,17 @@ func init() {
 			return nil, fmt.Errorf("threshold: invalid min value %q: %w", cfg.Args[1], err)
 		}
 		return &thresholdStage{key: cfg.Args[0], min: min, negate: cfg.Negate}, nil
+	})
+
+	register("message-length", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		if len(cfg.Args) < 1 {
+			return nil, fmt.Errorf("message-length: requires args [max_chars]")
+		}
+		max := 0
+		if _, err := fmt.Sscanf(cfg.Args[0], "%d", &max); err != nil {
+			return nil, fmt.Errorf("message-length: invalid max value %q: %w", cfg.Args[0], err)
+		}
+		return &messageLengthStage{max: max, negate: cfg.Negate}, nil
 	})
 
 	register("warn", func(cfg config.StageConfig) (pipeline.Stage, error) {
@@ -206,14 +218,18 @@ func (s *messageMatchesStage) Run(ctx *pipeline.PipelineContext) (pipeline.Stage
 }
 
 // extractCommitMessage pulls the message from a git commit command.
-// Handles: -m "msg", -m 'msg', -m unquoted-token, heredoc via cat <<'EOF'.
 // NOTE: -F <file> is intentionally not supported — reading a file from the hook
 // process is racy and path-fragile. Commits using -F bypass message-based rules.
 var commitMsgFlag = regexp.MustCompile(`-m\s+(?:"([^"]+)"|'([^']+)'|([^\s'"][^\s]*))`)
 var commitMsgHeredoc = regexp.MustCompile(`(?s)<<'?EOF'?\n(.*?)\nEOF`)
 
 func extractCommitMessage(cmd string) string {
-	// Try -m flag first
+	// Heredoc first: in `-m "$(cat <<'EOF' … EOF)"` the -m regex also captures
+	// the wrapper, which would add ~20 characters to a length check. This
+	// capture group is the body alone, with the EOF markers left out.
+	if m := commitMsgHeredoc.FindStringSubmatch(cmd); m != nil {
+		return strings.TrimSpace(m[1])
+	}
 	if m := commitMsgFlag.FindStringSubmatch(cmd); m != nil {
 		if m[1] != "" {
 			return m[1]
@@ -223,11 +239,36 @@ func extractCommitMessage(cmd string) string {
 		}
 		return m[3]
 	}
-	// Try heredoc
-	if m := commitMsgHeredoc.FindStringSubmatch(cmd); m != nil {
-		return strings.TrimSpace(m[1])
-	}
 	return ""
+}
+
+// messageLengthStage continues when the commit message is longer than max, so a
+// deny beneath it enforces the cap. Counted in runes: a byte count would reject
+// a short message for using non-ASCII.
+type messageLengthStage struct {
+	max    int
+	negate bool
+}
+
+func (s *messageLengthStage) Name() string             { return "message-length" }
+func (s *messageLengthStage) Type() pipeline.StageType { return pipeline.ClassifierType }
+func (s *messageLengthStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	msg := extractCommitMessage(ctx.Command())
+	ctx.Bag["commit_message"] = msg
+	if msg == "" {
+		return pipeline.Skip, nil
+	}
+
+	n := utf8.RuneCountInString(msg)
+	ctx.Bag["commit_message_length"] = n
+	over := n > s.max
+	if s.negate {
+		over = !over
+	}
+	if over {
+		return pipeline.Continue, nil
+	}
+	return pipeline.Skip, nil
 }
 
 // thresholdStage checks if a numeric bag value meets a minimum threshold.
