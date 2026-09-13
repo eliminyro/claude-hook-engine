@@ -162,19 +162,13 @@ func TestExtractCommitMessageUnquoted(t *testing.T) {
 	}
 }
 
-func TestExtractCommitMessageHeredoc(t *testing.T) {
-	// Heredoc-style commit message. The -m argument here is "$(cat <<'EOF'..."
-	// which contains a single-quoted '...' substring that the -m regex would
-	// match before the heredoc regex got a chance — except commitMsgFlag's
-	// single-quoted alternative requires content inside the quotes, and the
-	// "$(cat <<" opening contains no closing single quote on the same span as
-	// the EOF marker. To make this unambiguous we use a command form that has
-	// no -m flag at all and relies solely on the heredoc path.
+// A heredoc not attached to -m is not the commit message. git commit takes no
+// message on stdin, so a bare heredoc belongs to something else in the command
+// — reading it is what made an unrelated `gh pr create --body` get measured.
+func TestExtractCommitMessageIgnoresABareHeredoc(t *testing.T) {
 	command := "git commit <<'EOF'\nlinear msg\nEOF"
-	got := runMessageMatchesWildcard(t, command)
-	want := "linear msg"
-	if got != want {
-		t.Errorf("expected %q, got %q", want, got)
+	if got := runMessageMatchesWildcard(t, command); got != "" {
+		t.Errorf("expected no message, got %q", got)
 	}
 }
 
@@ -364,5 +358,38 @@ func TestMessageLengthSkipsWhenNoMessage(t *testing.T) {
 	over, _ := runMessageLength(t, `git commit --amend --no-edit`, 500)
 	if over {
 		t.Errorf("a commit carrying no message must not trip the cap")
+	}
+}
+
+// `git commit -m "short" && gh pr create --body "$(cat <<EOF …)"` is one
+// command. The PR body is not the commit message and must not be measured.
+func TestMessageLengthIgnoresAnUnrelatedHeredoc(t *testing.T) {
+	body := strings.Repeat("b", 900)
+	cmd := `git commit -m "chore: archive the shipped changes" && ` +
+		"gh pr create --title x --body \"$(cat <<'EOF'\n" + body + "\nEOF\n)\""
+
+	over, n := runMessageLength(t, cmd, 500)
+
+	if over {
+		t.Errorf("a short commit message must pass regardless of a later heredoc; measured %d", n)
+	}
+	if n != len("chore: archive the shipped changes") {
+		t.Errorf("measured %d, want the -m argument's length %d",
+			n, len("chore: archive the shipped changes"))
+	}
+}
+
+// The supported multi-line form still measures its body, not the wrapper.
+func TestMessageLengthReadsTheCommitHeredoc(t *testing.T) {
+	body := strings.Repeat("c", 600)
+	cmd := "git commit -m \"$(cat <<'EOF'\n" + body + "\nEOF\n)\""
+
+	over, n := runMessageLength(t, cmd, 500)
+
+	if !over {
+		t.Errorf("a 600-char heredoc body must trip a 500 cap")
+	}
+	if n != 600 {
+		t.Errorf("measured %d, want 600 — the body alone, without the wrapper", n)
 	}
 }

@@ -221,12 +221,12 @@ func (s *messageMatchesStage) Run(ctx *pipeline.PipelineContext) (pipeline.Stage
 // NOTE: -F <file> is intentionally not supported — reading a file from the hook
 // process is racy and path-fragile. Commits using -F bypass message-based rules.
 var commitMsgFlag = regexp.MustCompile(`-m\s+(?:"([^"]+)"|'([^']+)'|([^\s'"][^\s]*))`)
-var commitMsgHeredoc = regexp.MustCompile(`(?s)<<'?EOF'?\n(.*?)\nEOF`)
+var commitMsgHeredoc = regexp.MustCompile(`(?s)-m\s+"\$\(\s*cat\s+<<'?EOF'?\n(.*?)\nEOF`)
 
 func extractCommitMessage(cmd string) string {
 	// Heredoc first: in `-m "$(cat <<'EOF' … EOF)"` the -m regex also captures
-	// the wrapper, which would add ~20 characters to a length check. This
-	// capture group is the body alone, with the EOF markers left out.
+	// the wrapper, which would add ~20 characters to a length check. Anchored to
+	// -m so a later `gh pr create --body "$(cat <<EOF …)"` is not measured.
 	if m := commitMsgHeredoc.FindStringSubmatch(cmd); m != nil {
 		return strings.TrimSpace(m[1])
 	}
