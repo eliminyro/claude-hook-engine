@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"mvdan.cc/sh/v3/syntax"
+
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
 )
@@ -74,6 +76,21 @@ func init() {
 			return nil, fmt.Errorf("message-length: invalid max value %q: %w", cfg.Args[0], err)
 		}
 		return &messageLengthStage{max: max, negate: cfg.Negate}, nil
+	})
+
+	register("invokes", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		if len(cfg.Args) == 0 {
+			return nil, fmt.Errorf("invokes: requires at least one command phrase in args")
+		}
+		phrases := make([][]string, 0, len(cfg.Args))
+		for _, a := range cfg.Args {
+			words := strings.Fields(a)
+			if len(words) == 0 {
+				return nil, fmt.Errorf("invokes: empty command phrase")
+			}
+			phrases = append(phrases, words)
+		}
+		return &invokesStage{phrases: phrases, negate: cfg.Negate}, nil
 	})
 
 	register("strip-token", func(cfg config.StageConfig) (pipeline.Stage, error) {
@@ -389,14 +406,14 @@ func (s *stripTokenStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResu
 	if raw == "" {
 		return pipeline.Skip, nil
 	}
-	stripped := s.apply(raw)
+	stripped := s.applyToMessage(raw)
 	if stripped == raw {
 		return pipeline.Skip, nil
 	}
 
 	ctx.ToolInput["command"] = stripped
 	if norm, ok := ctx.Bag["command"].(string); ok {
-		ctx.Bag["command"] = s.apply(norm)
+		ctx.Bag["command"] = s.applyToMessage(norm)
 	}
 	if ctx.Result.UpdatedInput == nil {
 		ctx.Result.UpdatedInput = map[string]any{}
@@ -410,4 +427,98 @@ func (s *stripTokenStage) apply(cmd string) string {
 		cmd = re.ReplaceAllString(cmd, "")
 	}
 	return cmd
+}
+
+// applyToMessage rewrites only the commit-message span, leaving the rest of the
+// command byte for byte — the same words quoted elsewhere must survive.
+func (s *stripTokenStage) applyToMessage(cmd string) string {
+	start, end, ok := commitMessageSpan(cmd)
+	if !ok {
+		return cmd
+	}
+	return cmd[:start] + s.apply(cmd[start:end]) + cmd[end:]
+}
+
+// commitMessageSpan locates the message inside a git commit command, reading
+// the same two forms as extractCommitMessage: heredoc body, then -m value.
+func commitMessageSpan(cmd string) (int, int, bool) {
+	if m := commitMsgHeredoc.FindStringSubmatchIndex(cmd); m != nil && m[2] >= 0 {
+		return m[2], m[3], true
+	}
+	if m := commitMsgFlag.FindStringSubmatchIndex(cmd); m != nil {
+		for g := 1; g <= 3; g++ {
+			if lo, hi := m[2*g], m[2*g+1]; lo >= 0 && hi > lo {
+				return lo, hi, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// invokesStage continues when the shell AST actually runs one of the given
+// command phrases. Text matching cannot tell `git commit` the command from the
+// same words inside a quoted string or a heredoc body; parsing can.
+type invokesStage struct {
+	phrases [][]string
+	negate  bool
+}
+
+func (s *invokesStage) Name() string             { return "invokes" }
+func (s *invokesStage) Type() pipeline.StageType { return pipeline.ClassifierType }
+func (s *invokesStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	matched := commandInvokes(ctx.Command(), s.phrases)
+	if s.negate {
+		matched = !matched
+	}
+	if matched {
+		return pipeline.Continue, nil
+	}
+	return pipeline.Skip, nil
+}
+
+// commandInvokes walks the parsed command for a call whose leading words match
+// a phrase. A command that will not parse matches nothing.
+func commandInvokes(cmd string, phrases [][]string) bool {
+	f, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
+	if err != nil {
+		return false
+	}
+	found := false
+	syntax.Walk(f, func(node syntax.Node) bool {
+		call, ok := node.(*syntax.CallExpr)
+		if !ok || found {
+			return !found
+		}
+		for _, phrase := range phrases {
+			if callStartsWith(call, phrase) {
+				found = true
+				break
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+func callStartsWith(call *syntax.CallExpr, phrase []string) bool {
+	if len(call.Args) < len(phrase) {
+		return false
+	}
+	for i, want := range phrase {
+		if litWord(call.Args[i]) != want {
+			return false
+		}
+	}
+	return true
+}
+
+// litWord joins a word's literal parts, ignoring quoting and expansions.
+func litWord(w *syntax.Word) string {
+	var sb strings.Builder
+	for _, part := range w.Parts {
+		if lit, ok := part.(*syntax.Lit); ok {
+			sb.WriteString(lit.Value)
+		}
+	}
+	return sb.String()
 }

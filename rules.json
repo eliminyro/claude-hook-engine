@@ -47,7 +47,7 @@
       "tool": "Bash",
       "description": "Require the hilo task's issue number on a commit subject; [no-task] overrides for exempt one-liners",
       "pipeline": [
-        { "stage": "command-contains", "args": ["git commit"] },
+        { "stage": "invokes", "args": ["git commit"] },
         { "stage": "command-regex", "negate": true, "patterns": ["\\[no-task\\]"] },
         { "stage": "message-matches", "negate": true, "args": ["^\\s*\\d+\\s*\\|"] },
         {
@@ -61,6 +61,7 @@
       "tool": "Bash",
       "description": "Require the hilo task's issue number in a new branch name: <type>/<issue>-<slug>",
       "pipeline": [
+        { "stage": "invokes", "args": ["git checkout", "git switch"] },
         { "stage": "command-regex", "patterns": ["git\\s+(?:checkout\\s+-b|switch\\s+-c)\\s+\\S"] },
         { "stage": "command-regex", "negate": true, "patterns": ["\\[no-task\\]"] },
         { "stage": "command-regex", "negate": true, "patterns": ["git\\s+(?:checkout\\s+-b|switch\\s+-c)\\s+['\"]?[A-Za-z0-9._-]+/[0-9]+-"] },
@@ -73,9 +74,9 @@
     {
       "id": "hilo-task-strip-override",
       "tool": "Bash",
-      "description": "Drop the [no-task] marker from a commit command so it never lands in history; decides nothing, so git-commit-ask still asks",
+      "description": "Drop the [no-task] marker from a commit message so it never lands in history; decides nothing, so git-commit-ask still asks",
       "pipeline": [
-        { "stage": "command-contains", "args": ["git commit"] },
+        { "stage": "invokes", "args": ["git commit"] },
         { "stage": "strip-token", "patterns": ["\\s*\\[no-task\\]"] }
       ]
     },
