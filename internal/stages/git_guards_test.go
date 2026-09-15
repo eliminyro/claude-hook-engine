@@ -393,3 +393,56 @@ func TestMessageLengthReadsTheCommitHeredoc(t *testing.T) {
 		t.Errorf("measured %d, want 600 — the body alone, without the wrapper", n)
 	}
 }
+
+func TestStripTokenRewritesCommandAndBag(t *testing.T) {
+	stage, err := stages.Build(config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}})
+	if err != nil {
+		t.Fatalf("build strip-token: %v", err)
+	}
+	ctx := newCtx(`git commit -m "fix: typo [no-task]"`)
+	ctx.Bag["command"] = `git commit -m "fix: typo [no-task]"`
+
+	result, err := stage.Run(ctx)
+	if err != nil {
+		t.Fatalf("run strip-token: %v", err)
+	}
+	if result != pipeline.Continue {
+		t.Fatalf("expected Continue, got %d", result)
+	}
+
+	want := `git commit -m "fix: typo"`
+	if got := ctx.ToolInput["command"]; got != want {
+		t.Errorf("tool_input command = %v, want %q", got, want)
+	}
+	if got := ctx.Bag["command"]; got != want {
+		t.Errorf("bag command = %v, want %q", got, want)
+	}
+	if got := ctx.Result.UpdatedInput["command"]; got != want {
+		t.Errorf("updatedInput command = %v, want %q", got, want)
+	}
+}
+
+func TestStripTokenSkipsWhenTokenAbsent(t *testing.T) {
+	stage, err := stages.Build(config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}})
+	if err != nil {
+		t.Fatalf("build strip-token: %v", err)
+	}
+	ctx := newCtx(`git commit -m "422 | fix: typo"`)
+
+	result, err := stage.Run(ctx)
+	if err != nil {
+		t.Fatalf("run strip-token: %v", err)
+	}
+	if result != pipeline.Skip {
+		t.Fatalf("expected Skip, got %d", result)
+	}
+	if ctx.Result.UpdatedInput != nil {
+		t.Errorf("expected no updatedInput, got %v", ctx.Result.UpdatedInput)
+	}
+}
+
+func TestStripTokenRequiresPatterns(t *testing.T) {
+	if _, err := stages.Build(config.StageConfig{Stage: "strip-token"}); err == nil {
+		t.Fatal("expected error when patterns are missing")
+	}
+}

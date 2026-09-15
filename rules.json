@@ -43,6 +43,56 @@
       ]
     },
     {
+      "id": "hilo-task-required-commit",
+      "tool": "Bash",
+      "description": "Require the hilo task's issue number on a commit subject; [no-task] overrides for exempt one-liners",
+      "pipeline": [
+        { "stage": "command-contains", "args": ["git commit"] },
+        { "stage": "command-regex", "negate": true, "patterns": ["\\[no-task\\]"] },
+        { "stage": "message-matches", "negate": true, "args": ["^\\s*\\d+\\s*\\|"] },
+        {
+          "stage": "deny",
+          "message": "No hilo task issue number in commit message: {commit_message}. Work starts from a hilo task \u2014 use the one named in the prompt, else search_tasks in the repo's project, else create_task. show_task \u2192 sync_links[].external_id is the issue number; subject is `<issue> | <type>: <description>`. A trivial one-liner may carry [no-task] in the message \u2014 the hook strips it before the commit lands."
+        }
+      ]
+    },
+    {
+      "id": "hilo-task-required-branch",
+      "tool": "Bash",
+      "description": "Require the hilo task's issue number in a new branch name: <type>/<issue>-<slug>",
+      "pipeline": [
+        { "stage": "command-regex", "patterns": ["git\\s+(?:checkout\\s+-b|switch\\s+-c)\\s+\\S"] },
+        { "stage": "command-regex", "negate": true, "patterns": ["\\[no-task\\]"] },
+        { "stage": "command-regex", "negate": true, "patterns": ["git\\s+(?:checkout\\s+-b|switch\\s+-c)\\s+['\"]?[A-Za-z0-9._-]+/[0-9]+-"] },
+        {
+          "stage": "deny",
+          "message": "Branch name carries no hilo task issue number. Name it <type>/<issue>-<slug>, e.g. feat/422-divergence-sweep \u2014 show_task \u2192 sync_links[].external_id is the number. No task yet? Search hilo for one, else create it. Exempt one-liner: append # [no-task]."
+        }
+      ]
+    },
+    {
+      "id": "hilo-task-strip-override",
+      "tool": "Bash",
+      "description": "Drop the [no-task] marker from a commit command so it never lands in history; decides nothing, so git-commit-ask still asks",
+      "pipeline": [
+        { "stage": "command-contains", "args": ["git commit"] },
+        { "stage": "strip-token", "patterns": ["\\s*\\[no-task\\]"] }
+      ]
+    },
+    {
+      "id": "commit-message-length",
+      "tool": "Bash",
+      "description": "Cap the commit message at 500 chars. Must precede git-commit-ask: first match wins, and that rule's ask ends the pipeline",
+      "pipeline": [
+        { "stage": "command-contains", "args": ["git commit"] },
+        { "stage": "message-length", "args": ["500"] },
+        {
+          "stage": "deny",
+          "message": "Commit message exceeds 500 characters (subject + body). Trim it, and put test plans, blast radius and rationale in the PR description instead."
+        }
+      ]
+    },
+    {
       "id": "git-commit-ask",
       "tool": "Bash",
       "description": "Always ask before committing",
