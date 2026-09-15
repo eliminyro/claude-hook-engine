@@ -76,6 +76,21 @@ func init() {
 		return &messageLengthStage{max: max, negate: cfg.Negate}, nil
 	})
 
+	register("strip-token", func(cfg config.StageConfig) (pipeline.Stage, error) {
+		if len(cfg.Patterns) == 0 {
+			return nil, fmt.Errorf("strip-token: requires at least one regex in patterns")
+		}
+		compiled := make([]*regexp.Regexp, 0, len(cfg.Patterns))
+		for _, pat := range cfg.Patterns {
+			re, err := regexp.Compile(pat)
+			if err != nil {
+				return nil, fmt.Errorf("strip-token: invalid regex %q: %w", pat, err)
+			}
+			compiled = append(compiled, re)
+		}
+		return &stripTokenStage{patterns: compiled}, nil
+	})
+
 	register("warn", func(cfg config.StageConfig) (pipeline.Stage, error) {
 		return &warnStage{message: cfg.Message}, nil
 	})
@@ -358,4 +373,41 @@ func (s *warnStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, er
 	}
 	ctx.Result.AdditionalContext = msg
 	return pipeline.Done, nil
+}
+
+// stripTokenStage removes matched tokens from the command before it runs, so an
+// override marker never lands in the file or history the command writes.
+// Ends without a decision, leaving the rewrite for a later rule's decider to carry.
+type stripTokenStage struct {
+	patterns []*regexp.Regexp
+}
+
+func (s *stripTokenStage) Name() string             { return "strip-token" }
+func (s *stripTokenStage) Type() pipeline.StageType { return pipeline.TransformerType }
+func (s *stripTokenStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
+	raw, _ := ctx.ToolInput["command"].(string)
+	if raw == "" {
+		return pipeline.Skip, nil
+	}
+	stripped := s.apply(raw)
+	if stripped == raw {
+		return pipeline.Skip, nil
+	}
+
+	ctx.ToolInput["command"] = stripped
+	if norm, ok := ctx.Bag["command"].(string); ok {
+		ctx.Bag["command"] = s.apply(norm)
+	}
+	if ctx.Result.UpdatedInput == nil {
+		ctx.Result.UpdatedInput = map[string]any{}
+	}
+	ctx.Result.UpdatedInput["command"] = stripped
+	return pipeline.Continue, nil
+}
+
+func (s *stripTokenStage) apply(cmd string) string {
+	for _, re := range s.patterns {
+		cmd = re.ReplaceAllString(cmd, "")
+	}
+	return cmd
 }
