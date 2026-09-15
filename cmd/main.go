@@ -16,7 +16,7 @@ func main() {
 	hook.Version = version
 
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: claude-hook-engine <pre|post|session-start|version> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: claude-hook-engine <pre|post|session-start|update|version> [args...]")
 		os.Exit(1)
 	}
 
@@ -30,6 +30,11 @@ func main() {
 		}
 	case "post":
 		if err := runPost(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "update":
+		if err := runUpdate(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -66,6 +71,16 @@ func runPre() error {
 	if output != "" {
 		fmt.Print(output)
 	}
+	return nil
+}
+
+// runUpdate installs the latest release now, whatever the schedule says.
+func runUpdate() error {
+	line, err := hook.Update(rulesPath())
+	if err != nil {
+		return fmt.Errorf("update failed: %w", err)
+	}
+	fmt.Println(line)
 	return nil
 }
 

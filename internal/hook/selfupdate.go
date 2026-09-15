@@ -74,8 +74,7 @@ func selfUpdate(cfg config.SelfUpdateConfig, version string) string {
 		return ""
 	}
 	stateDir := expandHome(cfg.StateDir)
-	target := expandHome(cfg.BinaryPath)
-	if stateDir == "" || target == "" {
+	if stateDir == "" || expandHome(cfg.BinaryPath) == "" {
 		return ""
 	}
 	stamp := filepath.Join(stateDir, selfUpdateStamp)
@@ -86,24 +85,70 @@ func selfUpdate(cfg config.SelfUpdateConfig, version string) string {
 	// per interval rather than one per session.
 	touchStamp(stamp)
 
+	line, err := update(cfg, version, false)
+	if err != nil {
+		slog.Debug("self-update", "repo", cfg.Repo, "error", err)
+		return ""
+	}
+	return line
+}
+
+// Update runs the same update deliberately, on demand. Asking for it overrides
+// the scheduling gates the session path applies — the throttle stamp, the dev
+// guard, and the release-age window — while every safety check still runs:
+// checksum, smoke test, atomic rename. Unlike the session path it reports
+// failure instead of swallowing it.
+func Update(rulesPath string) (string, error) {
+	cfg, err := config.Load(rulesPath)
+	if err != nil {
+		return "", err
+	}
+	sc := cfg.SelfUpdate
+	if sc.Repo == "" || sc.BinaryPath == "" {
+		return "", fmt.Errorf("self_update in %s needs both repo and binary_path", rulesPath)
+	}
+	if expandHome(sc.BinaryPath) == "" {
+		return "", fmt.Errorf("self_update binary_path %q does not resolve", sc.BinaryPath)
+	}
+	line, err := update(sc, Version, true)
+	if err != nil {
+		return "", err
+	}
+	// update stays silent when nothing was installed; a command must still answer.
+	if line == "" {
+		line = fmt.Sprintf("claude-hook-engine is already at %s.", Version)
+	}
+	// A manual update resets the throttle: the next session has nothing to check.
+	if dir := expandHome(sc.StateDir); dir != "" {
+		touchStamp(filepath.Join(dir, selfUpdateStamp))
+	}
+	return line, nil
+}
+
+// update fetches the latest release and installs it when its tag differs from
+// the running one, reporting "" when there was nothing to do. forced waives the
+// release-age window; the throttle and dev guards belong to the caller.
+func update(cfg config.SelfUpdateConfig, version string, forced bool) (string, error) {
 	rel, err := latestRelease(cfg.Repo)
 	if err != nil {
-		slog.Debug("self-update: latest release", "repo", cfg.Repo, "error", err)
-		return ""
+		return "", fmt.Errorf("looking up the latest release of %s: %w", cfg.Repo, err)
 	}
-	if rel.TagName == "" || rel.TagName == version {
-		return ""
+	if rel.TagName == "" {
+		return "", fmt.Errorf("latest release of %s carries no tag", cfg.Repo)
 	}
-	if err := oldEnough(rel.PublishedAt, cfg.MinAge()); err != nil {
-		slog.Debug("self-update: release age", "tag", rel.TagName, "error", err)
-		return ""
+	if rel.TagName == version {
+		return "", nil
 	}
-	if err := installRelease(target, rel); err != nil {
-		slog.Debug("self-update: install", "tag", rel.TagName, "error", err)
-		return ""
+	if !forced {
+		if err := oldEnough(rel.PublishedAt, cfg.MinAge()); err != nil {
+			return "", fmt.Errorf("release %s: %w", rel.TagName, err)
+		}
+	}
+	if err := installRelease(expandHome(cfg.BinaryPath), rel); err != nil {
+		return "", fmt.Errorf("installing %s: %w", rel.TagName, err)
 	}
 	return fmt.Sprintf(
-		"claude-hook-engine updated %s → %s. The new binary takes effect next session.", version, rel.TagName)
+		"claude-hook-engine updated %s → %s. The new binary takes effect next session.", version, rel.TagName), nil
 }
 
 // dueForCheck reports whether the stamp file is older than the interval. A
