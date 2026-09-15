@@ -503,3 +503,110 @@ func TestHandleSessionStart_NoSelfUpdateConfigIsSilent(t *testing.T) {
 		t.Errorf("no self_update block still made %d request(s); want 0", n)
 	}
 }
+
+// rulesFileFor writes the minimal rules file Update reads its config from.
+func rulesFileFor(t *testing.T, target, stateDir string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "rules.json")
+	body, err := json.Marshal(map[string]any{
+		"version":     1,
+		"pre":         []any{},
+		"self_update": map[string]string{"repo": testRepo, "binary_path": target, "state_dir": stateDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func assertInstalled(t *testing.T, target, tag string) {
+	t.Helper()
+	body, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != string(fakeBinary(tag)) {
+		t.Errorf("installed binary = %q, want the %s asset", body, tag)
+	}
+}
+
+func TestUpdate_IgnoresTheThrottle(t *testing.T) {
+	releaseServer(t, "v1.1.0", platformAssets("v1.1.0"))
+	target := installedBinary(t)
+	stateDir := t.TempDir()
+	// A stamp from this instant would stop the session path dead.
+	touchStamp(filepath.Join(stateDir, selfUpdateStamp))
+	withVersion(t, "v1.0.0")
+
+	line, err := Update(rulesFileFor(t, target, stateDir))
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !strings.Contains(line, "v1.1.0") {
+		t.Errorf("report must name the new tag; got %q", line)
+	}
+	assertInstalled(t, target, "v1.1.0")
+}
+
+func TestUpdate_RunsFromADevBuild(t *testing.T) {
+	releaseServer(t, "v1.1.0", platformAssets("v1.1.0"))
+	target := installedBinary(t)
+	withVersion(t, devVersion)
+
+	if _, err := Update(rulesFileFor(t, target, t.TempDir())); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	assertInstalled(t, target, "v1.1.0")
+}
+
+func TestUpdate_YoungReleaseInstallsAnyway(t *testing.T) {
+	releaseServerAt(t, "v1.1.0", platformAssets("v1.1.0"), publishedAgo(time.Minute))
+	target := installedBinary(t)
+	withVersion(t, "v1.0.0")
+
+	if _, err := Update(rulesFileFor(t, target, t.TempDir())); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	assertInstalled(t, target, "v1.1.0")
+}
+
+func TestUpdate_SameTagChangesNothing(t *testing.T) {
+	releaseServer(t, "v1.0.0", platformAssets("v1.0.0"))
+	target := installedBinary(t)
+	withVersion(t, "v1.0.0")
+
+	line, err := Update(rulesFileFor(t, target, t.TempDir()))
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !strings.Contains(line, "already at v1.0.0") {
+		t.Errorf("expected an already-current report, got %q", line)
+	}
+	assertUnchanged(t, target)
+}
+
+func TestUpdate_ReportsFailureInsteadOfSwallowingIt(t *testing.T) {
+	assets := map[string][]byte{"claude-hook-engine_plan9_sparc": fakeBinary("v1.1.0")}
+	assets["checksums.txt"] = checksumsFor(assets)
+	releaseServer(t, "v1.1.0", assets)
+	target := installedBinary(t)
+	withVersion(t, "v1.0.0")
+
+	if _, err := Update(rulesFileFor(t, target, t.TempDir())); err == nil {
+		t.Fatal("expected an error when the release carries no asset for this platform")
+	}
+	assertUnchanged(t, target)
+}
+
+func TestUpdate_UnconfiguredIsAnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rules.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"pre":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Update(path); err == nil {
+		t.Fatal("expected an error when self_update is unconfigured")
+	}
+}
