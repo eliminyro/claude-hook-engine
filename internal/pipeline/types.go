@@ -127,7 +127,7 @@ func DefaultDetection() *DetectionConfig {
 // DefaultExec returns the default exec config.
 func DefaultExec() *ExecConfig {
 	return &ExecConfig{
-		RewritePrefix: "secretctl exec -- ",
+		RewritePrefix: "secretctl exec --raw -- ",
 	}
 }
 

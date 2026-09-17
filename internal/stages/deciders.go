@@ -151,7 +151,7 @@ func (s *rewriteExecStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	// If the user already wrote the wrapper themselves, don't prepend it
 	// again — double-wrapping makes secretctl's child command literally
 	// "secretctl", which its leak guard rejects.
-	if strings.HasPrefix(rawCmd, prefix) {
+	if strings.HasPrefix(rawCmd, prefix) || strings.HasPrefix(strings.TrimSpace(rawCmd), "secretctl exec") {
 		ctx.Result.PermissionDecision = "allow"
 		ctx.Result.SystemMessage = "Template already wrapped"
 		return pipeline.Done, nil
@@ -159,9 +159,16 @@ func (s *rewriteExecStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageRes
 	ctx.Result.PermissionDecision = "allow"
 	ctx.Result.SystemMessage = "Template rewritten to exec"
 	ctx.Result.UpdatedInput = map[string]any{
-		"command": prefix + rawCmd,
+		"command": prefix + shellSingleQuote(rawCmd),
 	}
 	return pipeline.Done, nil
+}
+
+// shellSingleQuote renders s as one shell argument. Without it the invoking
+// shell consumes heredocs, pipes and operators before secretctl sees them, so
+// templates outside the first simple command are never resolved.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // allPartsAllowedStage uses shell AST parsing to check all simple commands against a prefix list.
