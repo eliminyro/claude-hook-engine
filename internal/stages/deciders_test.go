@@ -1,6 +1,8 @@
 package stages_test
 
 import (
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
@@ -114,9 +116,74 @@ func TestRewriteExec(t *testing.T) {
 	if !ok {
 		t.Fatal("expected updatedInput.command to be set")
 	}
-	expected := "secretctl exec -- " + rawCmd
+	expected := `secretctl exec --raw -- 'cd /tmp && curl -H '\''{{vault:ansible@common:key}}'\'' https://api.com'`
 	if cmd != expected {
 		t.Errorf("expected %q, got %q", expected, cmd)
+	}
+}
+
+// The rewritten command is handed to a shell, which must pass the whole script
+// to secretctl as a single argument — heredoc, operators and quotes intact.
+func TestRewriteExecRoundTripsThroughShell(t *testing.T) {
+	const prefix = "secretctl exec --raw -- "
+	cases := map[string]string{
+		"heredoc":      "kubectl apply -f - <<'EOF'\nvalue: \"{{gcp:proj/secret}}\"\nEOF",
+		"single quote": "curl -H 'Bearer {{vault:m@p:k}}' https://api.com",
+		"operators":    "kubectl get pod && curl -H '{{vault:m@p:k}}' https://api.com | grep ok",
+		"backslash":    `curl -d 'a\b{{vault:m@p:k}}' https://api.com`,
+	}
+
+	for name, rawCmd := range cases {
+		stage, _ := stages.Build(config.StageConfig{Stage: "rewrite-exec"})
+		ctx := newCtx(rawCmd)
+		ctx.Bag["command"] = rawCmd
+		ctx.Bag["has_template"] = true
+		if _, err := stage.Run(ctx); err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		cmd, _ := ctx.Result.UpdatedInput["command"].(string)
+		if !strings.HasPrefix(cmd, prefix) {
+			t.Fatalf("%s: missing prefix in %q", name, cmd)
+		}
+
+		// A real shell must yield exactly one argument, equal to the original.
+		out, err := exec.Command("sh", "-c", "for a in "+strings.TrimPrefix(cmd, prefix)+"; do printf '%s' \"$a\"; done").Output()
+		if err != nil {
+			t.Fatalf("%s: shell rejected the rewritten command: %v", name, err)
+		}
+		if string(out) != rawCmd {
+			t.Errorf("%s: shell round-trip changed the script.\nwant %q\ngot  %q", name, rawCmd, string(out))
+		}
+	}
+}
+
+func TestRewriteExecEscapesEmbeddedSingleQuotes(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{Stage: "rewrite-exec"})
+	rawCmd := "curl -H 'Bearer {{vault:m@p:k}}' https://api.com"
+	ctx := newCtx(rawCmd)
+	ctx.Bag["command"] = rawCmd
+	ctx.Bag["has_template"] = true
+	if _, err := stage.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cmd, _ := ctx.Result.UpdatedInput["command"].(string)
+	expected := `secretctl exec --raw -- 'curl -H '\''Bearer {{vault:m@p:k}}'\'' https://api.com'`
+	if cmd != expected {
+		t.Errorf("expected %q, got %q", expected, cmd)
+	}
+}
+
+func TestRewriteExecSkipsAlreadyWrapped(t *testing.T) {
+	stage, _ := stages.Build(config.StageConfig{Stage: "rewrite-exec"})
+	rawCmd := "secretctl exec -- curl -H '{{vault:m@p:k}}' https://api.com"
+	ctx := newCtx(rawCmd)
+	ctx.Bag["command"] = rawCmd
+	ctx.Bag["has_template"] = true
+	if _, err := stage.Run(ctx); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ctx.Result.UpdatedInput != nil {
+		t.Errorf("already-wrapped command must not be rewritten, got %v", ctx.Result.UpdatedInput)
 	}
 }
 
