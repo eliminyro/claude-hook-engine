@@ -1,15 +1,54 @@
 name: release
 
+# A merge touching what ships runs `ci release`: CHANGELOG.md commit + annotated
+# tag, pushed with the deploy key master's ruleset lets through. That tag push
+# starts this workflow again, and the tag run builds and publishes.
 on:
   push:
+    branches:
+      - master
+    paths:
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
     tags:
       - "v*"
 
 permissions:
   contents: write
+  packages: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  cut:
+    if: github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.1.0
+        with:
+          fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+
+      # The ci binary is static, so it runs here and pushes over the checkout's
+      # deploy-key SSH setup. No GH_TOKEN in its env: that would push over HTTPS.
+      - name: Fetch ci from the ci-tool image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          id=$(docker create ghcr.io/eliminyro/ci-tool:v0.3.0)
+          docker cp "$id:/usr/local/bin/ci" "$RUNNER_TEMP/ci"
+          docker rm "$id" >/dev/null
+
+      - name: Cut release
+        run: '"$RUNNER_TEMP/ci" release'
+
+  publish:
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.1.0
@@ -43,8 +82,13 @@ jobs:
       - name: Checksums
         run: cd dist && sha256sum claude-hook-engine_* > checksums.txt
 
+      # ci release annotates its tags with the changelog entry; a hand-made
+      # lightweight tag has none, so GitHub generates the notes instead.
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" dist/* --title "$TAG" --generate-notes
+        run: |
+          notes=--generate-notes
+          [ "$(git cat-file -t "$TAG")" = tag ] && notes=--notes-from-tag
+          gh release create "$TAG" dist/* --title "$TAG" "$notes"
