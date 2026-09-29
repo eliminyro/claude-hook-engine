@@ -297,6 +297,36 @@ func TestExtractCommitMessageHeredocInsideCommandSubstitution(t *testing.T) {
 	}
 }
 
+func TestExtractCommitMessageCombinedFlags(t *testing.T) {
+	cases := map[string]string{
+		`git commit -am "fix: all"`:                                 "fix: all",
+		`git commit -qam 'fix: quiet'`:                              "fix: quiet",
+		"git commit -q -am \"$(cat <<'EOF'\nfix: heredoc\nEOF\n)\"": "fix: heredoc",
+		`git commit --amend -m "fix: amended"`:                      "fix: amended",
+	}
+	for command, want := range cases {
+		if got := runMessageMatchesWildcard(t, command); got != want {
+			t.Errorf("%s: expected %q, got %q", command, want, got)
+		}
+	}
+}
+
+// git joins repeated -m values as paragraphs; every one is part of the message.
+func TestExtractCommitMessageEveryFlag(t *testing.T) {
+	got := runMessageMatchesWildcard(t, `git commit -m "fix: subject" -m "Body line."`)
+	if want := "fix: subject\n\nBody line."; got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+// A -m earlier in a compound command belongs to that command, not the commit.
+func TestExtractCommitMessageIgnoresFlagsBeforeCommit(t *testing.T) {
+	got := runMessageMatchesWildcard(t, `python -m pytest && git commit -m "fix: after tests"`)
+	if want := "fix: after tests"; got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
 // A plain -m must not go near the heredoc path.
 func TestExtractCommitMessagePlainFlagUnaffected(t *testing.T) {
 	got := runMessageMatchesWildcard(t, `git commit -m "feat: still plain"`)
@@ -419,6 +449,27 @@ func TestStripTokenRewritesCommandAndBag(t *testing.T) {
 	}
 	if got := ctx.Result.UpdatedInput["command"]; got != want {
 		t.Errorf("updatedInput command = %v, want %q", got, want)
+	}
+}
+
+// Both forms left the marker in history on 2026-09-29 (issue 13).
+func TestStripTokenCombinedFlagAndLaterFlag(t *testing.T) {
+	stage, err := stages.Build(config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}})
+	if err != nil {
+		t.Fatalf("build strip-token: %v", err)
+	}
+	cases := map[string]string{
+		"git commit -q -am \"$(cat <<'EOF'\ncleanup: x\n\n[no-task]\nEOF\n)\"": "git commit -q -am \"$(cat <<'EOF'\ncleanup: x\nEOF\n)\"",
+		`git commit -m "cleanup: x" -m "[no-task]"`:                            `git commit -m "cleanup: x" -m ""`,
+	}
+	for command, want := range cases {
+		ctx := newCtx(command)
+		if _, err := stage.Run(ctx); err != nil {
+			t.Fatalf("run strip-token: %v", err)
+		}
+		if got := ctx.ToolInput["command"]; got != want {
+			t.Errorf("%s:\n got  %q\n want %q", command, got, want)
+		}
 	}
 }
 

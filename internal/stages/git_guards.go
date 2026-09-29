@@ -252,26 +252,55 @@ func (s *messageMatchesStage) Run(ctx *pipeline.PipelineContext) (pipeline.Stage
 // extractCommitMessage pulls the message from a git commit command.
 // NOTE: -F <file> is intentionally not supported — reading a file from the hook
 // process is racy and path-fragile. Commits using -F bypass message-based rules.
-var commitMsgFlag = regexp.MustCompile(`-m\s+(?:"([^"]+)"|'([^']+)'|([^\s'"][^\s]*))`)
-var commitMsgHeredoc = regexp.MustCompile(`(?s)-m\s+"\$\(\s*cat\s+<<'?EOF'?\n(.*?)\nEOF`)
+var (
+	commitInvocation = regexp.MustCompile(`\bgit\s+(?:-C\s+\S+\s+)?commit\b`)
+	commitMsgOpt     = regexp.MustCompile(`\s-[A-Za-z]*m\s+`)
+	commitMsgHeredoc = regexp.MustCompile(`(?s)^"\$\(\s*cat\s+<<'?EOF'?\n(.*?)\nEOF`)
+	commitMsgValue   = regexp.MustCompile(`^(?:"([^"]+)"|'([^']+)'|([^\s'"][^\s]*))`)
+)
 
+// commitMessageSpans returns the byte range of every -m value after `git
+// commit` (combined flags like -am included), in order. A heredoc value spans
+// only its body, so the `$(cat <<'EOF'` wrapper is neither measured nor rewritten.
+func commitMessageSpans(cmd string) [][2]int {
+	loc := commitInvocation.FindStringIndex(cmd)
+	if loc == nil {
+		return nil
+	}
+	var spans [][2]int
+	for pos := loc[1]; ; {
+		opt := commitMsgOpt.FindStringIndex(cmd[pos:])
+		if opt == nil {
+			return spans
+		}
+		at := pos + opt[1]
+		pos = at
+		if m := commitMsgHeredoc.FindStringSubmatchIndex(cmd[at:]); m != nil {
+			spans = append(spans, [2]int{at + m[2], at + m[3]})
+			pos = at + m[1]
+			continue
+		}
+		if m := commitMsgValue.FindStringSubmatchIndex(cmd[at:]); m != nil {
+			for g := 1; g <= 3; g++ {
+				if lo, hi := m[2*g], m[2*g+1]; lo >= 0 && hi > lo {
+					spans = append(spans, [2]int{at + lo, at + hi})
+					break
+				}
+			}
+			pos = at + m[1]
+		}
+	}
+}
+
+// extractCommitMessage joins every -m value the way git does: as paragraphs.
 func extractCommitMessage(cmd string) string {
-	// Heredoc first: in `-m "$(cat <<'EOF' … EOF)"` the -m regex also captures
-	// the wrapper, which would add ~20 characters to a length check. Anchored to
-	// -m so a later `gh pr create --body "$(cat <<EOF …)"` is not measured.
-	if m := commitMsgHeredoc.FindStringSubmatch(cmd); m != nil {
-		return strings.TrimSpace(m[1])
-	}
-	if m := commitMsgFlag.FindStringSubmatch(cmd); m != nil {
-		if m[1] != "" {
-			return m[1]
+	var parts []string
+	for _, s := range commitMessageSpans(cmd) {
+		if p := strings.TrimSpace(cmd[s[0]:s[1]]); p != "" {
+			parts = append(parts, p)
 		}
-		if m[2] != "" {
-			return m[2]
-		}
-		return m[3]
 	}
-	return ""
+	return strings.Join(parts, "\n\n")
 }
 
 // messageLengthStage continues when the commit message is longer than max, so a
@@ -429,30 +458,16 @@ func (s *stripTokenStage) apply(cmd string) string {
 	return cmd
 }
 
-// applyToMessage rewrites only the commit-message span, leaving the rest of the
-// command byte for byte — the same words quoted elsewhere must survive.
+// applyToMessage rewrites only the commit-message spans, leaving the rest of the
+// command byte for byte — the same words quoted elsewhere must survive. Walks
+// the spans backwards so earlier offsets stay valid as later ones shrink.
 func (s *stripTokenStage) applyToMessage(cmd string) string {
-	start, end, ok := commitMessageSpan(cmd)
-	if !ok {
-		return cmd
+	spans := commitMessageSpans(cmd)
+	for i := len(spans) - 1; i >= 0; i-- {
+		lo, hi := spans[i][0], spans[i][1]
+		cmd = cmd[:lo] + s.apply(cmd[lo:hi]) + cmd[hi:]
 	}
-	return cmd[:start] + s.apply(cmd[start:end]) + cmd[end:]
-}
-
-// commitMessageSpan locates the message inside a git commit command, reading
-// the same two forms as extractCommitMessage: heredoc body, then -m value.
-func commitMessageSpan(cmd string) (int, int, bool) {
-	if m := commitMsgHeredoc.FindStringSubmatchIndex(cmd); m != nil && m[2] >= 0 {
-		return m[2], m[3], true
-	}
-	if m := commitMsgFlag.FindStringSubmatchIndex(cmd); m != nil {
-		for g := 1; g <= 3; g++ {
-			if lo, hi := m[2*g], m[2*g+1]; lo >= 0 && hi > lo {
-				return lo, hi, true
-			}
-		}
-	}
-	return 0, 0, false
+	return cmd
 }
 
 // invokesStage continues when the shell AST actually runs one of the given

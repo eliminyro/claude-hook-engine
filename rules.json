@@ -48,7 +48,7 @@
       "description": "Require the hilo task's issue number on a commit subject; [no-task] overrides for exempt one-liners",
       "pipeline": [
         { "stage": "invokes", "args": ["git commit"] },
-        { "stage": "command-regex", "negate": true, "patterns": ["\\[no-task\\]"] },
+        { "stage": "message-contains", "negate": true, "args": ["[no-task]"] },
         { "stage": "message-matches", "negate": true, "args": ["^\\s*\\d+\\s*\\|"] },
         {
           "stage": "deny",
@@ -85,7 +85,7 @@
       "tool": "Bash",
       "description": "Cap the commit message at 500 chars. Must precede git-commit-ask: first match wins, and that rule's ask ends the pipeline",
       "pipeline": [
-        { "stage": "command-contains", "args": ["git commit"] },
+        { "stage": "invokes", "args": ["git commit"] },
         { "stage": "message-length", "args": ["500"] },
         {
           "stage": "deny",
@@ -98,7 +98,7 @@
       "tool": "Bash",
       "description": "Always ask before committing",
       "pipeline": [
-        { "stage": "command-contains", "args": ["git commit"] },
+        { "stage": "invokes", "args": ["git commit"] },
         { "stage": "ask" }
       ]
     },
