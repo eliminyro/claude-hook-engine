@@ -16,6 +16,7 @@ func TestRegistryKnownStages(t *testing.T) {
 		"rewrite-exec", "all-parts-allowed",
 		"head-tail", "truncate-smart", "summarize-json",
 		"summarize-table", "extract-error",
+		"classify-jev", "route-model",
 	}
 
 	for _, name := range known {

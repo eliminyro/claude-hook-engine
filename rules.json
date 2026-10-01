@@ -284,6 +284,16 @@
       ]
     },
     {
+      "id": "subagent-model-routing",
+      "tool": "Agent",
+      "description": "Classify an unmodeled Agent dispatch via the hosted Jev classifier and route it to a configured model tier; fails open throughout (no-op until model_routing is configured)",
+      "pipeline": [
+        { "stage": "field-absent", "args": ["model"] },
+        { "stage": "classify-jev" },
+        { "stage": "route-model" }
+      ]
+    },
+    {
       "id": "comment-cap-hash",
       "description": "Cap consecutive # comment lines an Edit/Write is about to land (python, shell, yaml, hcl, dockerfiles)",
       "pipeline": [

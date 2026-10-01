@@ -156,3 +156,44 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+func TestLoadNoModelRoutingBlockStaysOff(t *testing.T) {
+	path := writeTestConfig(t, `{"version": 1, "defaults": {}, "pre": [], "post": []}`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ModelRouting.APIKeyTemplate != "" {
+		t.Errorf("expected empty api_key_template when model_routing is absent, got %q", cfg.ModelRouting.APIKeyTemplate)
+	}
+}
+
+func TestLoadModelRoutingBlock(t *testing.T) {
+	path := writeTestConfig(t, `{
+		"version": 1,
+		"defaults": {}, "pre": [], "post": [],
+		"model_routing": {
+			"api_key_template": "{{vault:homelab@common:openrouter_api_key}}",
+			"models": {"fast": "claude-haiku", "balanced": "claude-sonnet", "deep": "claude-opus"},
+			"upgrade_confidence_floor": 0.6,
+			"downgrade_confidence_floor": 0.8,
+			"risky_threshold": 0.7,
+			"timeout_ms": 2000,
+			"log_decisions": true
+		}
+	}`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mr := cfg.ModelRouting
+	if mr.APIKeyTemplate != "{{vault:homelab@common:openrouter_api_key}}" {
+		t.Errorf("api_key_template not parsed: %+v", mr)
+	}
+	if mr.Models["fast"] != "claude-haiku" || mr.Models["deep"] != "claude-opus" {
+		t.Errorf("models not parsed: %+v", mr.Models)
+	}
+	if mr.RiskyThreshold != 0.7 || mr.TimeoutMs != 2000 || !mr.LogDecisions {
+		t.Errorf("scalar fields not parsed: %+v", mr)
+	}
+}

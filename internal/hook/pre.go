@@ -62,15 +62,17 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 	defaults := cfg.Defaults
 	detection := cfg.Detection
 	execCfg := cfg.Exec
+	modelRouting := cfg.ModelRouting
 	ctx := &pipeline.PipelineContext{
-		Event:     "pre",
-		ToolName:  inp.ToolName,
-		ToolInput: inp.ToolInput,
-		Bag:       map[string]any{"cwd": inp.CWD},
-		Defaults:  &defaults,
-		Detection: &detection,
-		Exec:      &execCfg,
-		Result:    &pipeline.HookResult{},
+		Event:        "pre",
+		ToolName:     inp.ToolName,
+		ToolInput:    inp.ToolInput,
+		Bag:          map[string]any{"cwd": inp.CWD},
+		Defaults:     &defaults,
+		Detection:    &detection,
+		Exec:         &execCfg,
+		ModelRouting: &modelRouting,
+		Result:       &pipeline.HookResult{},
 	}
 
 	matched := pipeline.RunPipeline(ctx, compiledRules, normalizer)

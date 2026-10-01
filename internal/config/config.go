@@ -28,6 +28,7 @@ type Config struct {
 	Projects           map[string]ProjectConfig           `json:"projects" yaml:"projects"`
 	MemoryMCP          MemoryMCPConfig                    `json:"memory_mcp" yaml:"memory_mcp"`
 	SelfUpdate         SelfUpdateConfig                   `json:"self_update" yaml:"self_update"`
+	ModelRouting       pipeline.ModelRoutingConfig        `json:"model_routing" yaml:"model_routing"`
 }
 
 // SelfUpdateConfig points the updater at a GitHub repository's releases and at

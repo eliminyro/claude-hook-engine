@@ -1,5 +1,7 @@
 package pipeline
 
+import "time"
+
 // StageResult controls pipeline flow after a stage runs.
 type StageResult int
 
@@ -27,16 +29,17 @@ type Stage interface {
 
 // PipelineContext is the shared state passed through all stages in a pipeline.
 type PipelineContext struct {
-	Event      string // "pre" or "post"
-	ToolName   string
-	ToolInput  map[string]any
-	ToolOutput string // post only
-	Bag        map[string]any
-	Category   *CategoryConfig
-	Defaults   *DefaultsConfig
-	Detection  *DetectionConfig
-	Exec       *ExecConfig
-	Result     *HookResult
+	Event        string // "pre" or "post"
+	ToolName     string
+	ToolInput    map[string]any
+	ToolOutput   string // post only
+	Bag          map[string]any
+	Category     *CategoryConfig
+	Defaults     *DefaultsConfig
+	Detection    *DetectionConfig
+	Exec         *ExecConfig
+	ModelRouting *ModelRoutingConfig
+	Result       *HookResult
 }
 
 // Command returns the normalized command from the bag, falling back to raw tool_input.
@@ -129,6 +132,37 @@ func DefaultExec() *ExecConfig {
 	return &ExecConfig{
 		RewritePrefix: "secretctl exec --raw -- ",
 	}
+}
+
+// ModelRoutingConfig holds the subagent-model-routing feature's settings. An
+// absent/empty APIKeyTemplate means the feature is off — see classify-jev.
+type ModelRoutingConfig struct {
+	APIKeyTemplate           string            `json:"api_key_template" yaml:"api_key_template"`
+	Models                   map[string]string `json:"models" yaml:"models"` // tier (fast/balanced/deep) -> model alias
+	UpgradeConfidenceFloor   float64           `json:"upgrade_confidence_floor" yaml:"upgrade_confidence_floor"`
+	DowngradeConfidenceFloor float64           `json:"downgrade_confidence_floor" yaml:"downgrade_confidence_floor"`
+	RiskyThreshold           float64           `json:"risky_threshold" yaml:"risky_threshold"`
+	TimeoutMs                int               `json:"timeout_ms" yaml:"timeout_ms"`
+	LogDecisions             bool              `json:"log_decisions" yaml:"log_decisions"`
+}
+
+const defaultModelRoutingTimeout = 3 * time.Second
+
+// Model returns the configured alias for tier, or "" if unset.
+func (c *ModelRoutingConfig) Model(tier string) string {
+	if c == nil {
+		return ""
+	}
+	return c.Models[tier]
+}
+
+// Timeout returns the configured classifier timeout, defaulting to 3s when
+// unset — a typo must not leave the classifier call unbounded.
+func (c *ModelRoutingConfig) Timeout() time.Duration {
+	if c == nil || c.TimeoutMs <= 0 {
+		return defaultModelRoutingTimeout
+	}
+	return time.Duration(c.TimeoutMs) * time.Millisecond
 }
 
 // HookResult accumulates the output a hook will return.
