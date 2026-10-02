@@ -3,6 +3,7 @@ package stages
 import (
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -65,18 +66,19 @@ func (s *denyStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, er
 	return pipeline.Done, nil
 }
 
-// expandBag substitutes {key} in a message with the string value classifiers
-// left in the bag, so a denial can name what it actually found.
+// expandBag substitutes {key} in a message with the string or int value
+// classifiers left in the bag, so a denial can name what it actually found.
 func expandBag(msg string, bag map[string]any) string {
 	if !strings.Contains(msg, "{") {
 		return msg
 	}
 	for key, val := range bag {
-		s, ok := val.(string)
-		if !ok {
-			continue
+		switch v := val.(type) {
+		case string:
+			msg = strings.ReplaceAll(msg, "{"+key+"}", v)
+		case int:
+			msg = strings.ReplaceAll(msg, "{"+key+"}", strconv.Itoa(v))
 		}
-		msg = strings.ReplaceAll(msg, "{"+key+"}", s)
 	}
 	return msg
 }
