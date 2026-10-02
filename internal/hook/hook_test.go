@@ -259,3 +259,39 @@ func TestPostToolUseSmallOutput(t *testing.T) {
 		t.Errorf("expected empty output for small result, got: %s", output)
 	}
 }
+
+func TestProductionMRDescriptionRules(t *testing.T) {
+	rulesPath := "../../rules.json"
+	good := "## What changed\\na\\n\\n## Why\\nb\\n\\n## What to check\\nc"
+	tests := []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{"complete", `glab mr create -d "` + good + `"`, ""},
+		{"missing section", `glab mr create -d "## Why\nb"`, "missing"},
+		{"file form", `gh pr create --body-file b.md`, "inline"},
+		{"too long", `gh pr create --body "` + strings.Repeat("x", 2600) + `"`, "2500"},
+		{"soft warn", `gh pr create --body "## What changed\n## Why\n## What to check\n` + strings.Repeat("x", 1600) + `"`, "aim for 1500"},
+		{"no description", `glab mr update 6033 --title x`, ""},
+		{"view untouched", `glab mr view 12`, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf(`{"tool_name":"Bash","tool_input":{"command":%q},"session_id":"s","cwd":"/tmp"}`, strings.ReplaceAll(tc.command, `\n`, "\n"))
+			out, err := hook.HandlePre(strings.NewReader(input), rulesPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.want == "" {
+				if strings.Contains(out, "MR/PR") || strings.Contains(out, "description") {
+					t.Errorf("unexpected output: %s", out)
+				}
+				return
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("expected %q in output: %s", tc.want, out)
+			}
+		})
+	}
+}
