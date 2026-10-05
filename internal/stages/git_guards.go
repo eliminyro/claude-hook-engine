@@ -409,8 +409,7 @@ type warnStage struct {
 func (s *warnStage) Name() string             { return "warn" }
 func (s *warnStage) Type() pipeline.StageType { return pipeline.DeciderType }
 func (s *warnStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
-	msg := s.message
-	// Substitute bag values
+	msg := expandBag(s.message, ctx.Bag)
 	if diffLines, ok := ctx.Bag["diff_lines"].(int); ok {
 		msg = strings.ReplaceAll(msg, "$DIFF_LINES", fmt.Sprintf("%d", diffLines))
 	}

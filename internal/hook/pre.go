@@ -74,16 +74,17 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 	}
 
 	matched := pipeline.RunPipeline(ctx, compiledRules, normalizer)
-	if !matched || ctx.Result.PermissionDecision == "" {
+	if !matched || (ctx.Result.PermissionDecision == "" && ctx.Result.AdditionalContext == "") {
 		return "", nil
 	}
 
 	// Build output — only include non-empty fields.
 	type inner struct {
 		HookEventName            string         `json:"hookEventName"`
-		PermissionDecision       string         `json:"permissionDecision"`
+		PermissionDecision       string         `json:"permissionDecision,omitempty"`
 		PermissionDecisionReason string         `json:"permissionDecisionReason,omitempty"`
 		UpdatedInput             map[string]any `json:"updatedInput,omitempty"`
+		AdditionalContext        string         `json:"additionalContext,omitempty"`
 	}
 	type outer struct {
 		HookSpecificOutput inner `json:"hookSpecificOutput"`
@@ -95,6 +96,7 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 			PermissionDecision:       ctx.Result.PermissionDecision,
 			PermissionDecisionReason: ctx.Result.SystemMessage,
 			UpdatedInput:             ctx.Result.UpdatedInput,
+			AdditionalContext:        ctx.Result.AdditionalContext,
 		},
 	}
 

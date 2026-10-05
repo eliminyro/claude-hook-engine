@@ -103,6 +103,58 @@
       ]
     },
     {
+      "id": "mr-description-unreadable",
+      "tool": "Bash",
+      "description": "Deny MR/PR descriptions passed as a file or variable, which the length and section checks cannot read",
+      "pipeline": [
+        { "stage": "invokes", "args": ["glab mr create", "glab mr update", "gh pr create", "gh pr edit"] },
+        { "stage": "description-unreadable" },
+        {
+          "stage": "deny",
+          "message": "Pass the description inline (a quoted value or a heredoc) so its length and sections can be checked; file and variable forms are not allowed."
+        }
+      ]
+    },
+    {
+      "id": "mr-description-hard-limit",
+      "tool": "Bash",
+      "description": "Cap MR/PR description prose at 2500 chars (code fences, tables, HTML comments and closing lines excluded)",
+      "pipeline": [
+        { "stage": "invokes", "args": ["glab mr create", "glab mr update", "gh pr create", "gh pr edit"] },
+        { "stage": "description-length", "args": ["2500"] },
+        {
+          "stage": "deny",
+          "message": "MR/PR description has {description_length} prose characters; the limit is 2500 (fenced code, tables, HTML comments and Closes/Part of lines do not count). Trim it and move detail to the linked issue."
+        }
+      ]
+    },
+    {
+      "id": "mr-description-template",
+      "tool": "Bash",
+      "description": "Require the What changed / Why / What to check sections in MR/PR descriptions",
+      "pipeline": [
+        { "stage": "invokes", "args": ["glab mr create", "glab mr update", "gh pr create", "gh pr edit"] },
+        { "stage": "description-sections", "args": ["## What changed", "## Why", "## What to check"] },
+        {
+          "stage": "deny",
+          "message": "MR/PR description is missing: {description_missing}. Use the template: ## What changed, ## Why, ## What to check."
+        }
+      ]
+    },
+    {
+      "id": "mr-description-soft-limit",
+      "tool": "Bash",
+      "description": "Warn when MR/PR description prose passes 1500 chars; the hard limit above denies at 2500",
+      "pipeline": [
+        { "stage": "invokes", "args": ["glab mr create", "glab mr update", "gh pr create", "gh pr edit"] },
+        { "stage": "description-length", "args": ["1500"] },
+        {
+          "stage": "warn",
+          "message": "MR/PR description has {description_length} prose characters; aim for 1500 or fewer. Trim anything the diff already shows."
+        }
+      ]
+    },
+    {
       "id": "block-secret-cli",
       "tool": "Bash",
       "description": "Block direct secret retrieval commands",
