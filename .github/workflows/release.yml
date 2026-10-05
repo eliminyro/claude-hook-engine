@@ -14,6 +14,7 @@ on:
       - go.sum
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -25,7 +26,7 @@ concurrency:
 
 jobs:
   cut:
-    if: github.ref_type == 'branch'
+    if: github.ref_type == 'branch' && github.ref_name == 'master'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.1.0
@@ -40,7 +41,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          id=$(docker create ghcr.io/eliminyro/ci-tool:v0.3.0)
+          id=$(docker create ghcr.io/eliminyro/ci-tool:latest)
           docker cp "$id:/usr/local/bin/ci" "$RUNNER_TEMP/ci"
           docker rm "$id" >/dev/null
 
