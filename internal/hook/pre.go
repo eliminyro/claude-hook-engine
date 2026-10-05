@@ -26,37 +26,23 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 		return "", fmt.Errorf("decoding pre input: %w", err)
 	}
 
+	// A hook error is non-blocking in Claude Code, so a rules file this binary
+	// cannot apply must not return one: every rule would be off, silently.
 	cfg, err := config.Load(rulesPath)
 	if err != nil {
-		return "", fmt.Errorf("pre: %w", err)
+		return failClosed(nil, err)
 	}
 	if cfg.UnsupportedVersion {
-		return "", nil
+		return failClosed(cfg, fmt.Errorf("rules config version %d is newer than this binary supports", cfg.Version))
 	}
-
-	// Build compiled rules.
-	compiledRules := make([]pipeline.RuleExec, 0, len(cfg.Pre))
-	for _, rule := range cfg.Pre {
-		stageList, err := stages.BuildPipeline(rule.Pipeline)
-		if err != nil {
-			return "", fmt.Errorf("building pre rule %q: %w", rule.ID, err)
-		}
-		var cat *pipeline.CategoryConfig
-		if rule.Category != "" {
-			resolved := cfg.ResolveCategory(rule.Category)
-			cat = &resolved
-		}
-		compiledRules = append(compiledRules, pipeline.RuleExec{
-			ID:       rule.ID,
-			Tool:     rule.Tool,
-			Stages:   stageList,
-			Category: cat,
-		})
+	compiledRules, err := compileRules(cfg)
+	if err != nil {
+		return failClosed(cfg, err)
 	}
 
 	normalizer, err := stages.Build(config.StageConfig{Stage: "normalize-command"})
 	if err != nil {
-		return "", fmt.Errorf("building normalizer: %w", err)
+		return failClosed(cfg, fmt.Errorf("building normalizer: %w", err))
 	}
 
 	defaults := cfg.Defaults
@@ -103,6 +89,54 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 	b, err := json.Marshal(out)
 	if err != nil {
 		return "", fmt.Errorf("marshaling pre output: %w", err)
+	}
+	return string(b), nil
+}
+
+func compileRules(cfg *config.Config) ([]pipeline.RuleExec, error) {
+	compiled := make([]pipeline.RuleExec, 0, len(cfg.Pre))
+	for _, rule := range cfg.Pre {
+		stageList, err := stages.BuildPipeline(rule.Pipeline)
+		if err != nil {
+			return nil, fmt.Errorf("building pre rule %q: %w", rule.ID, err)
+		}
+		var cat *pipeline.CategoryConfig
+		if rule.Category != "" {
+			resolved := cfg.ResolveCategory(rule.Category)
+			cat = &resolved
+		}
+		compiled = append(compiled, pipeline.RuleExec{
+			ID:       rule.ID,
+			Tool:     rule.Tool,
+			Stages:   stageList,
+			Category: cat,
+		})
+	}
+	return compiled, nil
+}
+
+// failClosed answers "ask" with the cause when the rules cannot be applied. It
+// first tries a newer release, the usual fix for rules ahead of the binary; each
+// hook call is a fresh process, so an installed update applies from the next call.
+func failClosed(cfg *config.Config, cause error) (string, error) {
+	next := "Run `claude-hook-engine update`, or fix ~/.claude/hooks/rules.json."
+	if cfg != nil {
+		if line := recoveryUpdate(cfg.SelfUpdate, Version); line != "" {
+			next = line + " Retry the call."
+		}
+	}
+	reason := fmt.Sprintf(
+		"claude-hook-engine %s cannot apply its rules, so none of them are checking this call: %v. %s",
+		Version, cause, next)
+	b, err := json.Marshal(map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":            "PreToolUse",
+			"permissionDecision":       "ask",
+			"permissionDecisionReason": reason,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshaling fail-closed output: %w", err)
 	}
 	return string(b), nil
 }

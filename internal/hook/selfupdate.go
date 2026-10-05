@@ -30,12 +30,14 @@ var Version = devVersion
 var githubAPIBase = "https://api.github.com"
 
 const (
-	selfUpdateStamp = "self-update-check"
-	updateTmpPrefix = ".claude-hook-engine-update-"
-	apiTimeout      = 5 * time.Second
-	downloadTimeout = 60 * time.Second
-	smokeTimeout    = 10 * time.Second
-	maxAssetBytes   = 64 << 20
+	selfUpdateStamp  = "self-update-check"
+	recoveryStamp    = "recovery-update-check"
+	recoveryInterval = 10 * time.Minute
+	updateTmpPrefix  = ".claude-hook-engine-update-"
+	apiTimeout       = 5 * time.Second
+	downloadTimeout  = 60 * time.Second
+	smokeTimeout     = 10 * time.Second
+	maxAssetBytes    = 64 << 20
 )
 
 // ghRelease is the slice of GitHub's release payload the updater reads.
@@ -88,6 +90,30 @@ func selfUpdate(cfg config.SelfUpdateConfig, version string) string {
 	line, err := update(cfg, version, false)
 	if err != nil {
 		slog.Debug("self-update", "repo", cfg.Repo, "error", err)
+		return ""
+	}
+	return line
+}
+
+// recoveryUpdate is the update attempted when the rules cannot be applied. The
+// rules already expect a newer binary, so the release-age window is waived; the
+// short throttle stops a broken state from calling GitHub on every tool call.
+func recoveryUpdate(cfg config.SelfUpdateConfig, version string) string {
+	if cfg.Repo == "" || cfg.BinaryPath == "" || version == "" || version == devVersion {
+		return ""
+	}
+	stateDir, binary := expandHome(cfg.StateDir), expandHome(cfg.BinaryPath)
+	if stateDir == "" || binary == "" {
+		return ""
+	}
+	stamp := filepath.Join(stateDir, recoveryStamp)
+	if !dueForCheck(stamp, recoveryInterval) {
+		return ""
+	}
+	touchStamp(stamp)
+	line, err := update(cfg, version, true)
+	if err != nil {
+		slog.Debug("recovery update", "repo", cfg.Repo, "error", err)
 		return ""
 	}
 	return line
