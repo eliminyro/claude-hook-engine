@@ -1,8 +1,8 @@
 name: release
 
-# A merge touching what ships runs `ci release`: CHANGELOG.md commit + annotated
-# tag, pushed with the deploy key master's ruleset lets through. That tag push
-# starts this workflow again, and the tag run builds and publishes.
+# A merge touching what ships runs `ci release` (CHANGELOG.md commit + annotated
+# tag, pushed with the deploy key) and publishes in the same run: the release
+# commit carries [skip ci], which GitHub applies to the tag push too.
 on:
   push:
     branches:
@@ -28,6 +28,9 @@ jobs:
   cut:
     if: github.ref_type == 'branch' && github.ref_name == 'master'
     runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.cut.outputs.should_release }}
+      tag: ${{ steps.cut.outputs.tag }}
     steps:
       - uses: actions/checkout@v6.1.0
         with:
@@ -46,13 +49,22 @@ jobs:
           docker rm "$id" >/dev/null
 
       - name: Cut release
+        id: cut
         run: '"$RUNNER_TEMP/ci" release'
 
+  # Runs after a cut that tagged, or on a hand-pushed or re-dispatched tag.
   publish:
-    if: github.ref_type == 'tag'
+    needs: cut
+    if: >-
+      always() && (github.ref_type == 'tag' ||
+      (needs.cut.result == 'success' && needs.cut.outputs.should_release == 'true'))
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.cut.outputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v6.1.0
+        with:
+          ref: ${{ env.TAG }}
 
       - uses: actions/setup-go@v6.5.0
         with:
@@ -66,8 +78,6 @@ jobs:
           go test ./...
 
       - name: Cross-build stamped binaries
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
           mkdir -p dist
           for platform in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
@@ -88,8 +98,11 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
         run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
+            exit 0
+          fi
           notes=--generate-notes
           [ "$(git cat-file -t "$TAG")" = tag ] && notes=--notes-from-tag
           gh release create "$TAG" dist/* --title "$TAG" "$notes"
