@@ -146,6 +146,19 @@ func TestExtractCommitMessageDoubleQuoted(t *testing.T) {
 	}
 }
 
+func TestExtractCommitMessageAfterGitGlobalOptions(t *testing.T) {
+	commands := []string{
+		`git -C /tmp/repo commit -m "feat: add thing"`,
+		`git -c user.name=x --no-pager commit -m "feat: add thing"`,
+		`git --git-dir=/tmp/repo/.git commit -m "feat: add thing"`,
+	}
+	for _, cmd := range commands {
+		if got := runMessageMatchesWildcard(t, cmd); got != "feat: add thing" {
+			t.Errorf("%q: expected %q, got %q", cmd, "feat: add thing", got)
+		}
+	}
+}
+
 func TestExtractCommitMessageSingleQuoted(t *testing.T) {
 	got := runMessageMatchesWildcard(t, `git commit -m 'fix: bug'`)
 	want := "fix: bug"
