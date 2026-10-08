@@ -39,6 +39,32 @@ func TestInvokesMatchesARealCall(t *testing.T) {
 	}
 }
 
+func TestInvokesSkipsGitGlobalOptions(t *testing.T) {
+	commands := []string{
+		`git -C /tmp/repo commit --allow-empty -m "422 | fix: x"`,
+		`git -C "$W" commit -q --amend --no-edit`,
+		`git -c user.name=x commit -m "422 | fix: x"`,
+		`git --git-dir=/tmp/repo/.git commit -m "422 | fix: x"`,
+		`git --work-tree /tmp/repo --no-pager commit -m "422 | fix: x"`,
+		`for d in a b; do git -C ~/w/$d commit -m "422 | fix: x"; done`,
+	}
+	for _, cmd := range commands {
+		if got := runInvokes(t, cmd, []string{"git commit"}, false); got != pipeline.Continue {
+			t.Errorf("%q: expected Continue, got %d", cmd, got)
+		}
+	}
+	skips := []string{
+		`git -C /tmp/repo log --oneline`,
+		`git -C commit log`,
+		`echo "git -C /tmp/repo commit -m x"`,
+	}
+	for _, cmd := range skips {
+		if got := runInvokes(t, cmd, []string{"git commit"}, false); got != pipeline.Skip {
+			t.Errorf("%q: expected Skip, got %d", cmd, got)
+		}
+	}
+}
+
 func TestInvokesIgnoresQuotedAndHeredocText(t *testing.T) {
 	commands := []string{
 		`echo "git commit -m 'fix: x'"`,

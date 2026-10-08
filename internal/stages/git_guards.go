@@ -253,7 +253,8 @@ func (s *messageMatchesStage) Run(ctx *pipeline.PipelineContext) (pipeline.Stage
 // NOTE: -F <file> is intentionally not supported — reading a file from the hook
 // process is racy and path-fragile. Commits using -F bypass message-based rules.
 var (
-	commitInvocation = regexp.MustCompile(`\bgit\s+(?:-C\s+\S+\s+)?commit\b`)
+	commitInvocation = regexp.MustCompile(
+		`\bgit\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)\s+\S+\s+|-\S+\s+)*commit\b`)
 	commitMsgOpt     = regexp.MustCompile(`\s-[A-Za-z]*m\s+`)
 	commitMsgHeredoc = regexp.MustCompile(`(?s)^"\$\(\s*cat\s+<<'?EOF'?\n(.*?)\nEOF`)
 	commitMsgValue   = regexp.MustCompile(`^(?:"([^"]+)"|'([^']+)'|([^\s'"][^\s]*))`)
@@ -515,15 +516,45 @@ func commandInvokes(cmd string, phrases [][]string) bool {
 }
 
 func callStartsWith(call *syntax.CallExpr, phrase []string) bool {
-	if len(call.Args) < len(phrase) {
+	if len(phrase) == 0 || len(call.Args) == 0 || litWord(call.Args[0]) != phrase[0] {
 		return false
 	}
-	for i, want := range phrase {
-		if litWord(call.Args[i]) != want {
+	i := 1
+	if phrase[0] == "git" {
+		i = skipGitGlobalOptions(call.Args, i)
+	}
+	if len(call.Args)-i < len(phrase)-1 {
+		return false
+	}
+	for j, want := range phrase[1:] {
+		if litWord(call.Args[i+j]) != want {
 			return false
 		}
 	}
 	return true
+}
+
+// gitOptionsWithValue are git's global options that take their value as the
+// next word; the `--opt=value` form is a single word and needs no entry.
+var gitOptionsWithValue = map[string]bool{
+	"-C": true, "-c": true, "--git-dir": true, "--work-tree": true,
+	"--namespace": true, "--super-prefix": true, "--config-env": true,
+}
+
+// skipGitGlobalOptions returns the index of the subcommand after git's global
+// options, so `git -C <path> commit` matches the `git commit` phrase.
+func skipGitGlobalOptions(args []*syntax.Word, i int) int {
+	for i < len(args) {
+		w := litWord(args[i])
+		if !strings.HasPrefix(w, "-") {
+			return i
+		}
+		i++
+		if gitOptionsWithValue[w] {
+			i++
+		}
+	}
+	return i
 }
 
 // litWord joins a word's literal parts, ignoring quoting and expansions.
