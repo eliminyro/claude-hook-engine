@@ -185,6 +185,30 @@ func TestExtractCommitMessageIgnoresABareHeredoc(t *testing.T) {
 	}
 }
 
+// -F - reads the message from stdin, so the heredoc feeding it is the message.
+func TestExtractCommitMessageFromStdinHeredoc(t *testing.T) {
+	cases := map[string]string{
+		"git commit -q -F - <<'EOF'\nfix: a thing\n\nWith a body.\nEOF\ngit push": "fix: a thing\n\nWith a body.",
+		"git commit -F- <<EOF\nfix: dash attached\nEOF":                           "fix: dash attached",
+		"git commit --file=- <<\"MSG\"\nfix: long flag\nMSG\n":                    "fix: long flag",
+		"git commit --file - <<'EOF' && git push\nfix: long flag spaced\nEOF":     "fix: long flag spaced",
+		"cd /r && git commit -qF - <<'EOF'\nfix: combined\nEOF":                   "fix: combined",
+	}
+	for command, want := range cases {
+		if got := runMessageMatchesWildcard(t, command); got != want {
+			t.Errorf("%q: expected %q, got %q", command, want, got)
+		}
+	}
+}
+
+// -F with a path names a file the hook cannot read; its heredoc is someone else's.
+func TestExtractCommitMessageIgnoresHeredocWithFilePath(t *testing.T) {
+	command := "git commit -F msg.txt && cat <<'EOF'\nnot the message\nEOF"
+	if got := runMessageMatchesWildcard(t, command); got != "" {
+		t.Errorf("expected no message, got %q", got)
+	}
+}
+
 // initGitRepoOnBranch wraps initGitRepo with a checkout to a known branch so
 // tests don't depend on git's init.defaultBranch setting (main vs master).
 func initGitRepoOnBranch(t *testing.T, dir, branch string) (absDir string) {
@@ -474,6 +498,8 @@ func TestStripTokenCombinedFlagAndLaterFlag(t *testing.T) {
 	cases := map[string]string{
 		"git commit -q -am \"$(cat <<'EOF'\ncleanup: x\n\n[no-task]\nEOF\n)\"": "git commit -q -am \"$(cat <<'EOF'\ncleanup: x\nEOF\n)\"",
 		`git commit -m "cleanup: x" -m "[no-task]"`:                            `git commit -m "cleanup: x" -m ""`,
+		// Left the marker in history on a11s.ai/a1!6307 (issue 36).
+		"git commit -q -F - <<'EOF'\ncleanup: x\n\n[no-task]\nEOF\ngit push": "git commit -q -F - <<'EOF'\ncleanup: x\nEOF\ngit push",
 	}
 	for command, want := range cases {
 		ctx := newCtx(command)

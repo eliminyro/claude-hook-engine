@@ -251,25 +251,35 @@ func (s *messageMatchesStage) Run(ctx *pipeline.PipelineContext) (pipeline.Stage
 
 // extractCommitMessage pulls the message from a git commit command.
 // NOTE: -F <file> is intentionally not supported — reading a file from the hook
-// process is racy and path-fragile. Commits using -F bypass message-based rules.
+// process is racy and path-fragile. Only -F - fed by a heredoc is read.
 var (
 	commitInvocation = regexp.MustCompile(
 		`\bgit\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)\s+\S+\s+|-\S+\s+)*commit\b`)
 	commitMsgOpt     = regexp.MustCompile(`\s-[A-Za-z]*m\s+`)
 	commitMsgHeredoc = regexp.MustCompile(`(?s)^"\$\(\s*cat\s+<<'?EOF'?\n(.*?)\nEOF`)
 	commitMsgValue   = regexp.MustCompile(`^(?:"([^"]+)"|'([^']+)'|([^\s'"][^\s]*))`)
+	commitFileStdin  = regexp.MustCompile(`\s(?:-[A-Za-z]*F\s*|--file(?:=|\s+))-(?:\s|$)`)
+	stdinHeredoc     = regexp.MustCompile(`(?:^|[^<])<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?[^\n]*\n`)
 )
 
 // commitMessageSpans returns the byte range of every -m value after `git
-// commit` (combined flags like -am included), in order. A heredoc value spans
-// only its body, so the `$(cat <<'EOF'` wrapper is neither measured nor rewritten.
+// commit` (combined flags like -am included), in order, then the stdin heredoc
+// body of -F -. A heredoc spans only its body, so its wrapper is never rewritten.
 func commitMessageSpans(cmd string) [][2]int {
 	loc := commitInvocation.FindStringIndex(cmd)
 	if loc == nil {
 		return nil
 	}
+	spans := commitFlagSpans(cmd, loc[1])
+	if s, ok := stdinMessageSpan(cmd, loc[1]); ok {
+		spans = append(spans, s)
+	}
+	return spans
+}
+
+func commitFlagSpans(cmd string, from int) [][2]int {
 	var spans [][2]int
-	for pos := loc[1]; ; {
+	for pos := from; ; {
 		opt := commitMsgOpt.FindStringIndex(cmd[pos:])
 		if opt == nil {
 			return spans
@@ -291,6 +301,33 @@ func commitMessageSpans(cmd string) [][2]int {
 			pos = at + m[1]
 		}
 	}
+}
+
+// stdinMessageSpan returns the body of the heredoc feeding `git commit -F -`.
+// Without -F - a heredoc is not the message: git commit reads no stdin then.
+func stdinMessageSpan(cmd string, from int) ([2]int, bool) {
+	rest := cmd[from:]
+	if !commitFileStdin.MatchString(rest) {
+		return [2]int{}, false
+	}
+	m := stdinHeredoc.FindStringSubmatchIndex(rest)
+	if m == nil {
+		return [2]int{}, false
+	}
+	delim := rest[m[2]:m[3]]
+	lo := from + m[1]
+	body := cmd[lo:]
+	if body == delim || strings.HasPrefix(body, delim+"\n") {
+		return [2]int{lo, lo}, true
+	}
+	end := strings.Index(body, "\n"+delim+"\n")
+	if end < 0 {
+		if !strings.HasSuffix(body, "\n"+delim) {
+			return [2]int{}, false
+		}
+		end = len(body) - len(delim) - 1
+	}
+	return [2]int{lo, lo + end}, true
 }
 
 // extractCommitMessage joins every -m value the way git does: as paragraphs.
