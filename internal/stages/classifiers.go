@@ -136,6 +136,12 @@ var wrapperPrefixRes = []*regexp.Regexp{
 
 func (s *normalizeCommandStage) Run(ctx *pipeline.PipelineContext) (pipeline.StageResult, error) {
 	raw, _ := ctx.ToolInput["command"].(string)
+	ctx.Bag["command"] = normalizeCommand(raw)
+	return pipeline.Continue, nil
+}
+
+// normalizeCommand only ever removes a prefix, so the result is a suffix of raw.
+func normalizeCommand(raw string) string {
 	cmd := strings.TrimLeft(raw, " \t")
 
 	// Strip leading "cd <path> &&" or "cd <path>;" prefixes (loop for chained cd's).
@@ -179,8 +185,7 @@ func (s *normalizeCommandStage) Run(ctx *pipeline.PipelineContext) (pipeline.Sta
 		}
 	}
 
-	ctx.Bag["command"] = cmd
-	return pipeline.Continue, nil
+	return cmd
 }
 
 // commandPrefixStage filters by command prefix.
