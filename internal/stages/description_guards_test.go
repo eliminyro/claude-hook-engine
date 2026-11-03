@@ -240,3 +240,198 @@ func TestMessageSubstitutesIntAndStringBagValues(t *testing.T) {
 		t.Errorf("warn context = %q, want %q", ctx.Result.AdditionalContext, want)
 	}
 }
+
+func TestStripTokenCoversMRDescriptions(t *testing.T) {
+	const mk = "[no-task]"
+	heredoc := func(pre, body string) string { return pre + `"$(cat <<'EOF'` + "\n" + body + "\nEOF\n)\"" }
+	tests := []struct {
+		name, cmd, want string
+	}{
+		{"glab create heredoc, marker last",
+			heredoc("glab mr create --assignee x --label y --title t --description ", "## What changed\nx\n\n"+mk),
+			heredoc("glab mr create --assignee x --label y --title t --description ", "## What changed\nx")},
+		{"glab update short flag", "glab mr update 5 -d 'a\n\n" + mk + "'", "glab mr update 5 -d 'a'"},
+		{"glab create = form", `glab mr create --description="a ` + mk + `"`, `glab mr create --description="a"`},
+		{"gh create long flag heredoc", heredoc("gh pr create --title t --body ", "a\n\n"+mk), heredoc("gh pr create --title t --body ", "a")},
+		{"gh edit short flag", `gh pr edit 3 -b "a ` + mk + `"`, `gh pr edit 3 -b "a"`},
+		{"gh create = form", `gh pr create --body='a ` + mk + `'`, `gh pr create --body='a'`},
+		{"marker mid-line", "glab mr create -d 'a " + mk + " b'", "glab mr create -d 'a b'"},
+		{"marker on a middle line", "glab mr create -d 'a\n" + mk + "\nb'", "glab mr create -d 'a\nb'"},
+		{"trailing newline after marker", "glab mr create -d 'a\n" + mk + "\n'", "glab mr create -d 'a'"},
+		{"rest of command untouched", "glab mr create -d 'a " + mk + "' --title 'x " + mk + "'", "glab mr create -d 'a' --title 'x " + mk + "'"},
+		{"commit message still stripped", `git commit -m "fix: x ` + mk + `"`, `git commit -m "fix: x"`},
+		{"commit and description in one command",
+			`git commit -m "fix: x ` + mk + `" && gh pr create -b "a ` + mk + `"`,
+			`git commit -m "fix: x" && gh pr create -b "a"`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, tc.cmd)
+			if res != pipeline.Continue {
+				t.Fatalf("expected Continue, got %d", res)
+			}
+			if got := ctx.ToolInput["command"]; got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStripTokenLeavesDescriptionsWithoutMarker(t *testing.T) {
+	cmds := []string{
+		"glab mr create -d 'a\n\n## Why\nb'",
+		"gh pr edit 3 --body \"a\"\n",
+		"glab mr create --description-file d.md # [no-task]",
+	}
+	for _, cmd := range cmds {
+		res, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, cmd)
+		if res != pipeline.Skip || ctx.ToolInput["command"] != cmd || ctx.Result.UpdatedInput != nil {
+			t.Errorf("%q: result %d, command %q; want untouched", cmd, res, ctx.ToolInput["command"])
+		}
+	}
+}
+
+func TestStripTokenNestedSpans(t *testing.T) {
+	const mk = "[no-" + "task]"
+	tests := []struct {
+		name, cmd, want string
+	}{
+		{"glab phrase quoted in a commit message",
+			`git commit -m "38 | fix: strip from glab mr create -d 'x ` + mk + `'"`,
+			`git commit -m "38 | fix: strip from glab mr create -d 'x'"`},
+		{"glab phrase in a commit heredoc body, marker last",
+			"git commit -m \"$(cat <<'EOF'\n38 | fix: x\n\nglab mr create -d 'x " + mk + "'\n\n" + mk + "\nEOF\n)\"",
+			"git commit -m \"$(cat <<'EOF'\n38 | fix: x\n\nglab mr create -d 'x'\nEOF\n)\""},
+		{"commit phrase in a glab heredoc description",
+			"glab mr create --title t --description \"$(cat <<'EOF'\nrun git commit -m 'a " + mk + "'\n\n" + mk + "\nEOF\n)\"",
+			"glab mr create --title t --description \"$(cat <<'EOF'\nrun git commit -m 'a'\nEOF\n)\""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, tc.cmd)
+			if got := ctx.ToolInput["command"]; got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStripTokenKeepsValueThatWouldVanish(t *testing.T) {
+	const mk = "[no-" + "task]"
+	tests := []struct {
+		name, cmd, want string
+		rewritten       bool
+	}{
+		{"unquoted whole value", "glab mr create -d " + mk + " --title x", "glab mr create -d " + mk + " --title x", false},
+		{"quoted whole value", "glab mr create -d '" + mk + "' --title x", "glab mr create -d '' --title x", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, tc.cmd)
+			if got := ctx.ToolInput["command"]; got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+			if rewritten := ctx.Result.UpdatedInput != nil; rewritten != tc.rewritten || (res == pipeline.Continue) != tc.rewritten {
+				t.Errorf("rewritten = %v, result %d; want rewritten %v", rewritten, res, tc.rewritten)
+			}
+		})
+	}
+}
+
+func TestStripTokenDiscardsRewriteThatBreaksQuoting(t *testing.T) {
+	const mk = "[no-" + "task]"
+	for _, cmd := range []string{
+		`glab mr create -d "a\ ` + mk + `" -t "t" && echo "x"`,
+		`git commit -m "1 | fix: a\ ` + mk + `"`,
+	} {
+		res, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, cmd)
+		if res != pipeline.Skip || ctx.ToolInput["command"] != cmd || ctx.Result.UpdatedInput != nil {
+			t.Errorf("%q: result %d, command %q; want no rewrite", cmd, res, ctx.ToolInput["command"])
+		}
+	}
+}
+
+func TestStripTokenDescriptionsStayInsideTheCall(t *testing.T) {
+	const mk = "[no-" + "task]"
+	tests := []struct{ name, cmd, want string }{
+		{"echo -d after the call", "glab mr create -d 'a' && echo -d '" + mk + " keep'", "glab mr create -d 'a' && echo -d '" + mk + " keep'"},
+		{"grep -b after the call", "gh pr create -b 'a' ; grep -b 'x " + mk + "' f", "gh pr create -b 'a' ; grep -b 'x " + mk + "' f"},
+		{"glab phrase inside an echo string",
+			`echo "glab mr create -d 'a ` + mk + `'" && glab mr create -d 'b ` + mk + `'`,
+			`echo "glab mr create -d 'a ` + mk + `'" && glab mr create -d 'b'`},
+		{"second call stripped too", "glab mr create -d 'a " + mk + "' && gh pr edit 3 -b 'b " + mk + "'", "glab mr create -d 'a' && gh pr edit 3 -b 'b'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, tc.cmd)
+			if got := ctx.ToolInput["command"]; got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStripTokenKeepsUserTrailingWhitespace(t *testing.T) {
+	const mk = "[no-" + "task]"
+	tests := []struct{ name, cmd, want string }{
+		{"marker mid-text", "gh pr edit 3 -b 'a " + mk + " b\n\n'", "gh pr edit 3 -b 'a b\n\n'"},
+		{"marker last then newlines", "gh pr edit 3 -b 'a\n\n" + mk + "\n\n'", "gh pr edit 3 -b 'a'"},
+		{"no marker change elsewhere", "gh pr edit 3 -b 'a\n\n' -t '" + mk + "'", "gh pr edit 3 -b 'a\n\n' -t '" + mk + "'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, tc.cmd)
+			if got := ctx.ToolInput["command"]; got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStripTokenThroughPrefixWrappers(t *testing.T) {
+	const mk = "[no-" + "task]"
+	for _, pre := range []string{"sudo ", "timeout 60 ", "nohup ", "cd /x && sudo -E ", "FOO=1 timeout -s KILL 5 ", "docker exec ctr ", "kubectl exec pod -- "} {
+		tests := []struct{ name, cmd, want string }{
+			{"git commit", pre + `git commit -m "1 | fix: a ` + mk + `"`, pre + `git commit -m "1 | fix: a"`},
+			{"glab mr create", pre + "glab mr create -d 'a " + mk + "'", pre + "glab mr create -d 'a'"},
+		}
+		for _, tc := range tests {
+			t.Run(pre+tc.name, func(t *testing.T) {
+				_, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, tc.cmd)
+				if got := ctx.ToolInput["command"]; got != tc.want {
+					t.Errorf("got  %q\nwant %q", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestStripTokenCommitAndMRQuotingEachOther(t *testing.T) {
+	const mk = "[no-" + "task]"
+	cmd := `git commit -m "38 | fix: strip from glab mr create -d 'x ` + mk + `' ` + mk + `" && ` +
+		`glab mr create -d "run git commit -m 'a ` + mk + `' ` + mk + `"`
+	want := `git commit -m "38 | fix: strip from glab mr create -d 'x'" && ` +
+		`glab mr create -d "run git commit -m 'a'"`
+	_, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, cmd)
+	if got := ctx.ToolInput["command"]; got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestStripTokenKeepsGoodSpanWhenAnotherBreaksParsing(t *testing.T) {
+	const mk = "[no-" + "task]"
+	tests := []struct{ name, cmd, want string }{
+		{"bad description", `git commit -m '1 | fix: a ` + mk + `' && glab mr create -d "b\ ` + mk + `" -t t`,
+			`git commit -m '1 | fix: a' && glab mr create -d "b\ ` + mk + `" -t t`},
+		{"bad commit", `git commit -m "1 | fix: a\ ` + mk + `" && glab mr create -d 'b ` + mk + `' -t t`,
+			`git commit -m "1 | fix: a\ ` + mk + `" && glab mr create -d 'b' -t t`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ctx := runDesc(t, config.StageConfig{Stage: "strip-token", Patterns: []string{`\s*\[no-task\]`}}, tc.cmd)
+			if got := ctx.ToolInput["command"]; got != tc.want {
+				t.Errorf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}

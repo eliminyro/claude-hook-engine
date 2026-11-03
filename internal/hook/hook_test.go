@@ -1,6 +1,8 @@
 package hook_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -293,5 +295,92 @@ func TestProductionMRDescriptionRules(t *testing.T) {
 				t.Errorf("expected %q in output: %s", tc.want, out)
 			}
 		})
+	}
+}
+
+func preOutput(t *testing.T, command string) map[string]any {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{
+		"tool_name": "Bash", "tool_input": map[string]any{"command": command}, "session_id": "s", "cwd": "/tmp",
+	})
+	out, err := hook.HandlePre(bytes.NewReader(b), "../../rules.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == "" {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("output %q: %v", out, err)
+	}
+	return m["hookSpecificOutput"].(map[string]any)
+}
+
+func TestProductionStripMarkerReachesClaude(t *testing.T) {
+	const mk = "[no-" + "task]"
+	const body = "## What changed\nx\n\n## Why\ny\n\n## What to check\nz"
+	t.Run("glab mr create heredoc", func(t *testing.T) {
+		cmd := "glab mr create --title t --description \"$(cat <<'EOF'\n" + body + "\n\n" + mk + "\nEOF\n)\""
+		h := preOutput(t, cmd)
+		if h == nil {
+			t.Fatal("no output; rewrite not emitted")
+		}
+		if _, ok := h["permissionDecision"]; ok {
+			t.Errorf("unexpected permissionDecision: %v", h["permissionDecision"])
+		}
+		got, _ := h["updatedInput"].(map[string]any)["command"].(string)
+		want := "glab mr create --title t --description \"$(cat <<'EOF'\n" + body + "\nEOF\n)\""
+		if got != want {
+			t.Errorf("got %q\nwant %q", got, want)
+		}
+	})
+	t.Run("gh pr create body", func(t *testing.T) {
+		h := preOutput(t, "gh pr create --title t --body '"+body+" "+mk+"'")
+		if h == nil {
+			t.Fatal("no output; rewrite not emitted")
+		}
+		if _, ok := h["permissionDecision"]; ok {
+			t.Errorf("unexpected permissionDecision: %v", h["permissionDecision"])
+		}
+		if got, _ := h["updatedInput"].(map[string]any)["command"].(string); got != "gh pr create --title t --body '"+body+"'" {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("git commit keeps its decision", func(t *testing.T) {
+		h := preOutput(t, `git commit -m "38 | fix: x `+mk+`"`)
+		if h == nil || h["permissionDecision"] != "ask" {
+			t.Fatalf("want ask decision, got %v", h)
+		}
+		if got, _ := h["updatedInput"].(map[string]any)["command"].(string); got != `git commit -m "38 | fix: x"` {
+			t.Errorf("got %q", got)
+		}
+	})
+	t.Run("no rewrite, no output", func(t *testing.T) {
+		if h := preOutput(t, "glab mr create --title t -d '"+body+"'"); h != nil {
+			t.Errorf("want no output, got %v", h)
+		}
+	})
+}
+
+func TestPreRewriteKeepsOtherToolInputFields(t *testing.T) {
+	const mk = "[no-" + "task]"
+	b, _ := json.Marshal(map[string]any{
+		"tool_name": "Bash", "session_id": "s", "cwd": "/tmp",
+		"tool_input": map[string]any{
+			"command": `git commit -m "38 | fix: x ` + mk + `"`, "timeout": 5000, "run_in_background": true, "description": "d",
+		},
+	})
+	out, err := hook.HandlePre(bytes.NewReader(b), "../../rules.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatal(err)
+	}
+	ui := m["hookSpecificOutput"].(map[string]any)["updatedInput"].(map[string]any)
+	if ui["command"] != `git commit -m "38 | fix: x"` || ui["timeout"] != float64(5000) || ui["run_in_background"] != true || ui["description"] != "d" {
+		t.Errorf("updatedInput = %v", ui)
 	}
 }

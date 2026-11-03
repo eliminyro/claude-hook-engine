@@ -38,8 +38,9 @@ func init() {
 // description is what a glab/gh create or update command passes as its body.
 type description struct {
 	text       string
-	present    bool // a description flag appeared
-	unreadable bool // a flag appeared whose value cannot be read inline
+	present    bool     // a description flag appeared
+	unreadable bool     // a flag appeared whose value cannot be read inline
+	spans      [][2]int // byte ranges of the readable values in the command, in order
 }
 
 func (d description) readable() bool { return d.present && !d.unreadable }
@@ -73,7 +74,7 @@ func extractDescription(cmd string) description {
 		d.present, d.unreadable = true, true
 	}
 
-	var parts []string
+	base := loc[1]
 	for pos := 0; ; {
 		opt := flag.FindStringIndex(rest[pos:])
 		if opt == nil {
@@ -83,7 +84,7 @@ func extractDescription(cmd string) description {
 		at := pos + opt[1]
 		pos = at
 		if m := descHeredoc.FindStringSubmatchIndex(rest[at:]); m != nil {
-			parts = append(parts, rest[at+m[2]:at+m[3]])
+			d.spans = append(d.spans, [2]int{base + at + m[2], base + at + m[3]})
 			pos = at + m[1]
 			continue
 		}
@@ -95,14 +96,18 @@ func extractDescription(cmd string) description {
 		pos = at + m[1]
 		switch {
 		case m[4] >= 0:
-			parts = append(parts, rest[at+m[4]:at+m[5]])
+			d.spans = append(d.spans, [2]int{base + at + m[4], base + at + m[5]})
 		case m[2] >= 0 && descDynamic(rest[at+m[2]:at+m[3]]), m[6] >= 0 && descDynamic(rest[at+m[6]:at+m[7]]):
 			d.unreadable = true
 		case m[2] >= 0:
-			parts = append(parts, rest[at+m[2]:at+m[3]])
+			d.spans = append(d.spans, [2]int{base + at + m[2], base + at + m[3]})
 		default:
-			parts = append(parts, rest[at+m[6]:at+m[7]])
+			d.spans = append(d.spans, [2]int{base + at + m[6], base + at + m[7]})
 		}
+	}
+	parts := make([]string, len(d.spans))
+	for i, sp := range d.spans {
+		parts[i] = cmd[sp[0]:sp[1]]
 	}
 	d.text = strings.TrimSpace(strings.Join(parts, "\n\n"))
 	return d

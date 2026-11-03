@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 
 	"github.com/eliminyro/claude-hook-engine/internal/config"
 	"github.com/eliminyro/claude-hook-engine/internal/pipeline"
@@ -60,8 +61,18 @@ func HandlePre(r io.Reader, rulesPath string) (string, error) {
 	}
 
 	matched := pipeline.RunPipeline(ctx, compiledRules, normalizer)
-	if !matched || (ctx.Result.PermissionDecision == "" && ctx.Result.AdditionalContext == "") {
+	// A rewrite is emitted even when no rule decides: a strip rule ends without one.
+	decided := matched && (ctx.Result.PermissionDecision != "" || ctx.Result.AdditionalContext != "")
+	if !decided && ctx.Result.UpdatedInput == nil {
 		return "", nil
+	}
+
+	// updatedInput replaces the whole tool input, so carry the other fields over.
+	if ctx.Result.UpdatedInput != nil {
+		merged := make(map[string]any, len(inp.ToolInput)+len(ctx.Result.UpdatedInput))
+		maps.Copy(merged, inp.ToolInput)
+		maps.Copy(merged, ctx.Result.UpdatedInput)
+		ctx.Result.UpdatedInput = merged
 	}
 
 	// Build output — only include non-empty fields.

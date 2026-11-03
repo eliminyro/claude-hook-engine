@@ -495,16 +495,95 @@ func (s *stripTokenStage) apply(cmd string) string {
 	return cmd
 }
 
-// applyToMessage rewrites only the commit-message spans, leaving the rest of the
-// command byte for byte — the same words quoted elsewhere must survive. Walks
-// the spans backwards so earlier offsets stay valid as later ones shrink.
-func (s *stripTokenStage) applyToMessage(cmd string) string {
-	spans := commitMessageSpans(cmd)
-	for i := len(spans) - 1; i >= 0; i-- {
-		lo, hi := spans[i][0], spans[i][1]
-		cmd = cmd[:lo] + s.apply(cmd[lo:hi]) + cmd[hi:]
+// applyToMessage rewrites only the commit-message and MR/PR description spans,
+// leaving the rest of the command byte for byte. Description spans come only from
+// the glab/gh calls in the parsed command; a span inside another is dropped.
+// A span whose rewrite would make a parsing command unparsable is left as is.
+func (s *stripTokenStage) applyToMessage(raw string) string {
+	// Gate and scan the normalized command, as the invokes stage does; it is a suffix of raw.
+	cmd := normalizeCommand(raw)
+	head := raw[:len(raw)-len(cmd)]
+	type span struct {
+		lo, hi int
+		desc   bool
 	}
-	return cmd
+	var spans []span
+	if commandInvokes(cmd, [][]string{{"git", "commit"}}) {
+		for _, sp := range commitMessageSpans(cmd) {
+			spans = append(spans, span{sp[0], sp[1], false})
+		}
+	}
+	for _, rg := range callRanges(cmd, descriptionPhrases) {
+		for _, sp := range extractDescription(cmd[rg[0]:rg[1]]).spans {
+			spans = append(spans, span{rg[0] + sp[0], rg[0] + sp[1], true})
+		}
+	}
+	slices.SortFunc(spans, func(a, b span) int {
+		if a.lo != b.lo {
+			return a.lo - b.lo
+		}
+		return b.hi - a.hi
+	})
+	outer := spans[:0]
+	end := 0
+	for _, sp := range spans {
+		if sp.lo >= end {
+			outer = append(outer, sp)
+			end = sp.hi
+		}
+	}
+	out := cmd
+	ok := parses(cmd)
+	for i := len(outer) - 1; i >= 0; i-- {
+		sp := outer[i]
+		old := out[sp.lo:sp.hi]
+		repl := s.apply(old)
+		if sp.desc {
+			// Whitespace after a marker that ended the description goes with it; other whitespace is the user's.
+			trimmed := strings.TrimRight(old, " \t\r\n")
+			if r := s.apply(trimmed); r != trimmed && strings.HasPrefix(trimmed, r) {
+				repl = r
+			}
+		}
+		// An unquoted value that would vanish must stay: its flag would swallow the next word.
+		if strings.TrimSpace(repl) == "" && strings.TrimSpace(old) != "" && sp.lo > 0 && !strings.ContainsRune("\"'\n", rune(out[sp.lo-1])) {
+			continue
+		}
+		next := out[:sp.lo] + repl + out[sp.hi:]
+		if ok && !parses(next) {
+			continue
+		}
+		out = next
+	}
+	return head + out
+}
+
+var descriptionPhrases = [][]string{{"glab", "mr", "create"}, {"glab", "mr", "update"}, {"gh", "pr", "create"}, {"gh", "pr", "edit"}}
+
+func parses(cmd string) bool {
+	_, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
+	return err == nil
+}
+
+// callRanges returns the byte range of every call whose leading words match a phrase.
+func callRanges(cmd string, phrases [][]string) [][2]int {
+	f, err := syntax.NewParser().Parse(strings.NewReader(cmd), "")
+	if err != nil {
+		return nil
+	}
+	var out [][2]int
+	syntax.Walk(f, func(node syntax.Node) bool {
+		if call, ok := node.(*syntax.CallExpr); ok {
+			for _, phrase := range phrases {
+				if callStartsWith(call, phrase) {
+					out = append(out, [2]int{int(call.Pos().Offset()), int(call.End().Offset())})
+					break
+				}
+			}
+		}
+		return true
+	})
+	return out
 }
 
 // invokesStage continues when the shell AST actually runs one of the given
